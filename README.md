@@ -8,9 +8,6 @@ A **Vite + TypeScript** web app that exposes simulated rail-booking **WebMCP too
 
 Implementations **A–D2** are intended to meet a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped).
 
-**Codex / verifier brief (what 5/5 means + before/after improvement log):**  
-[`prototypes/reliability-boundary/FIVE_FIVE_FOR_CODEX.md`](prototypes/reliability-boundary/FIVE_FIVE_FOR_CODEX.md)
-
 Proof tests: `prototypes/webmcp-test-app/tests/fiveFiveProof.test.ts`. Universal skill: `skills/webmcp-reliability/`. Plugin API: `prototypes/reliability-boundary/plugin/`.
 
 Purchase is **simulated only** — no payments, no real tickets.

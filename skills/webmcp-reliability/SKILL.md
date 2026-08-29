@@ -37,10 +37,6 @@ Improve predictability and reliability of WebMCP tool use—the same class of tr
 | Timeout after possible commit | Reconcile state; do not second purchase |
 | Reload mid-flow | Recovery decision from observed state |
 
-## 5/5 quality + score log (for Codex)
-
-`prototypes/reliability-boundary/FIVE_FIVE_FOR_CODEX.md` — detailed 5/5 definition per A–D2 and before/after improvement log.
-
 ## Reference implementation
 
 Plugin API (site-agnostic):
