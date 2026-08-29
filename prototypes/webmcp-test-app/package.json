@@ -1,0 +1,20 @@
+{
+  "name": "reliablerail-sandbox",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "calibrate": "vitest run tests/calibrate.write.test.ts",
+    "sync-fixture": "cp ../../configurations/fixtures/fixture-v0.json src/data/fixture-v0.json"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

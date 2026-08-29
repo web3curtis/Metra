@@ -1,0 +1,29 @@
+{
+  "metric_version": "metrics-calibration-v0",
+  "primary": [
+    {
+      "id": "apparatus_reset_ok",
+      "definition": "reset yields EMPTY and zero committed orders"
+    },
+    {
+      "id": "oracle_scripted_success",
+      "definition": "scripted path reaches PURCHASED with fixture task_target checks"
+    },
+    {
+      "id": "duplicate_commit_count",
+      "definition": "number of committed purchases after scripted path + one extra finalize attempt"
+    },
+    {
+      "id": "deterministic_repeat",
+      "definition": "oracle-relevant final-state fields identical across calibration_deterministic_repeats"
+    }
+  ],
+  "agent_stage_defaults": {
+    "material_effect_threshold_pp": 10,
+    "stability_tolerance_pp": 10,
+    "min_sessions": 5,
+    "max_sessions": 20
+  },
+  "frozen_before_agent_trials": true,
+  "note": "Agent primary metrics (valid-action, repeatable-outcome, etc.) activate from baseline onward per EXPERIMENT_VARIABLES.md"
+}

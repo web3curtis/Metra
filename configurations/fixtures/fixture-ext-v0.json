@@ -1,0 +1,78 @@
+{
+  "fixture_version": "fixture-ext-v0",
+  "timezone": "Australia/Sydney",
+  "currency": "AUD",
+  "passenger_count": 2,
+  "budget_aud": 300,
+  "class": "standard",
+  "require_adjacent_seats": true,
+  "origin": "Melbourne",
+  "destination": "Albury",
+  "journeys": [
+    {
+      "journey_id": "RR-MEL-ABY-20300710-0800",
+      "direction": "outbound",
+      "origin": "Melbourne",
+      "destination": "Albury",
+      "depart_at": "2030-07-10T08:00:00+10:00",
+      "arrive_at": "2030-07-10T11:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 65,
+      "available": true
+    },
+    {
+      "journey_id": "RR-MEL-ABY-20300710-1500",
+      "direction": "outbound",
+      "origin": "Melbourne",
+      "destination": "Albury",
+      "depart_at": "2030-07-10T15:00:00+10:00",
+      "arrive_at": "2030-07-10T18:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 80,
+      "available": true
+    },
+    {
+      "journey_id": "RR-ABY-MEL-20300712-1800",
+      "direction": "return",
+      "origin": "Albury",
+      "destination": "Melbourne",
+      "depart_at": "2030-07-12T18:00:00+10:00",
+      "arrive_at": "2030-07-12T21:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 65,
+      "available": true
+    },
+    {
+      "journey_id": "RR-ABY-MEL-20300712-1100",
+      "direction": "return",
+      "origin": "Albury",
+      "destination": "Melbourne",
+      "depart_at": "2030-07-12T11:00:00+10:00",
+      "arrive_at": "2030-07-12T14:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 60,
+      "available": true
+    }
+  ],
+  "task_target": {
+    "outbound_depart_local": "2030-07-10T08:00:00",
+    "return_depart_local": "2030-07-12T18:00:00",
+    "outbound_journey_id": "RR-MEL-ABY-20300710-0800",
+    "return_journey_id": "RR-ABY-MEL-20300712-1800",
+    "expected_total_aud": 260,
+    "note": "External-validity fixture — separate from Sydney–Canberra causal claims."
+  },
+  "seat_map": {
+    "carriage": "C",
+    "seats": [
+      { "seat_id": "C1", "row": 1, "column": "window" },
+      { "seat_id": "C2", "row": 1, "column": "aisle" },
+      { "seat_id": "C3", "row": 2, "column": "window" },
+      { "seat_id": "C4", "row": 2, "column": "aisle" }
+    ],
+    "adjacent_pairs": [["C1", "C2"], ["C3", "C4"]]
+  },
+  "default_adjacent_pair": ["C1", "C2"],
+  "order_id_prefix": "RRX-ORD",
+  "receipt_id_prefix": "RRX-RCP"
+}

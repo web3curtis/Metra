@@ -1,0 +1,1 @@
+{"root":["./src/main.ts","./src/domain/harness.ts","./src/domain/oracle.ts","./src/domain/store.ts","./src/domain/types.ts","./src/webmcp/register.ts","./scripts/calibrate.ts","./tests/apparatus.test.ts"],"errors":true,"version":"5.8.3"}

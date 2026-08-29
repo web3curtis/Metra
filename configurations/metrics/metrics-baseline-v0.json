@@ -1,0 +1,21 @@
+{
+  "metric_version": "metrics-baseline-v0",
+  "primary": [
+    "task_success",
+    "valid_action_rate",
+    "repeatable_outcome_rate",
+    "invalid_call_rate",
+    "duplicate_effect_count"
+  ],
+  "secondary": [
+    "total_tool_calls",
+    "unnecessary_action_count",
+    "steps_to_completion_or_stop",
+    "escalation_count",
+    "browser_error_count"
+  ],
+  "material_effect_threshold_pp": 10,
+  "stability_tolerance_pp": 10,
+  "frozen": true,
+  "source": "research/governance/EXPERIMENT_VARIABLES.md"
+}

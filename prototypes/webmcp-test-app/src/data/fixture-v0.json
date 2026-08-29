@@ -1,0 +1,80 @@
+{
+  "fixture_version": "fixture-v0",
+  "timezone": "Australia/Sydney",
+  "currency": "AUD",
+  "passenger_count": 2,
+  "budget_aud": 300,
+  "class": "standard",
+  "require_adjacent_seats": true,
+  "origin": "Sydney",
+  "destination": "Canberra",
+  "journeys": [
+    {
+      "journey_id": "RR-SYD-CBR-20300615-0900",
+      "direction": "outbound",
+      "origin": "Sydney",
+      "destination": "Canberra",
+      "depart_at": "2030-06-15T09:00:00+10:00",
+      "arrive_at": "2030-06-15T12:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 70,
+      "available": true
+    },
+    {
+      "journey_id": "RR-SYD-CBR-20300615-1400",
+      "direction": "outbound",
+      "origin": "Sydney",
+      "destination": "Canberra",
+      "depart_at": "2030-06-15T14:00:00+10:00",
+      "arrive_at": "2030-06-15T17:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 85,
+      "available": true
+    },
+    {
+      "journey_id": "RR-CBR-SYD-20300617-1700",
+      "direction": "return",
+      "origin": "Canberra",
+      "destination": "Sydney",
+      "depart_at": "2030-06-17T17:00:00+10:00",
+      "arrive_at": "2030-06-17T20:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 70,
+      "available": true
+    },
+    {
+      "journey_id": "RR-CBR-SYD-20300617-1200",
+      "direction": "return",
+      "origin": "Canberra",
+      "destination": "Sydney",
+      "depart_at": "2030-06-17T12:00:00+10:00",
+      "arrive_at": "2030-06-17T15:30:00+10:00",
+      "class": "standard",
+      "price_per_passenger_aud": 65,
+      "available": true
+    }
+  ],
+  "task_target": {
+    "outbound_depart_local": "2030-06-15T09:00:00",
+    "return_depart_local": "2030-06-17T17:00:00",
+    "outbound_journey_id": "RR-SYD-CBR-20300615-0900",
+    "return_journey_id": "RR-CBR-SYD-20300617-1700",
+    "expected_total_aud": 280,
+    "note": "IDs are oracle/fixture secrets — not given to the agent prompt."
+  },
+  "seat_map": {
+    "carriage": "A",
+    "seats": [
+      { "seat_id": "A1", "row": 1, "column": "window" },
+      { "seat_id": "A2", "row": 1, "column": "aisle" },
+      { "seat_id": "A3", "row": 2, "column": "window" },
+      { "seat_id": "A4", "row": 2, "column": "aisle" },
+      { "seat_id": "B1", "row": 1, "column": "solo" },
+      { "seat_id": "B2", "row": 3, "column": "solo" }
+    ],
+    "adjacent_pairs": [["A1", "A2"], ["A3", "A4"]]
+  },
+  "default_adjacent_pair": ["A1", "A2"],
+  "order_id_prefix": "RR-ORD",
+  "receipt_id_prefix": "RR-RCP"
+}

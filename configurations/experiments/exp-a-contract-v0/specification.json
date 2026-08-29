@@ -1,0 +1,36 @@
+{
+  "experiment_id": "exp-a-contract-v0",
+  "prototype_id": "reliablerail-webmcp",
+  "stage_id": "exp-a",
+  "task_version": "task-v0",
+  "environment_fixture_version": "fixture-v0",
+  "agent_profile_version": "agent.reference-planner.v0",
+  "prompt_version": "prompt.reference-planner.v0",
+  "mechanism_flags": {
+    "contract_conformance": true,
+    "capability_freshness": false,
+    "structured_semantics": false,
+    "diagnosis_policy": false,
+    "effect_safety": false,
+    "state_recovery": false
+  },
+  "adversity_scenario_version": "none",
+  "primary_metric_version": "metrics-baseline-v0",
+  "runtime": {
+    "lane": "native",
+    "fail_closed_on_lane_mismatch": true,
+    "critiqor_adapter": false,
+    "ui_fallback_for_webmcp": false
+  },
+  "budgets": {
+    "max_tool_calls": 40,
+    "max_wall_time_ms": 600000
+  },
+  "repetition_policy": {
+    "min_agent_sessions_per_condition": 5,
+    "batch_size": 5,
+    "max_agent_sessions_per_condition": 20,
+    "stability_tolerance_pp": 10,
+    "material_effect_threshold_pp": 10
+  }
+}

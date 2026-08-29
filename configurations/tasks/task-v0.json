@@ -1,0 +1,18 @@
+{
+  "task_version": "task-v0",
+  "wording": "Using only ReliableRail Sandbox and its WebMCP tools, create exactly once a simulated order for two fictional return tickets from Sydney to Canberra for the fixed June 2030 travel dates, in standard class, with adjacent seats, for a displayed total no greater than AUD 300. Finalize the simulated order and confirm its fictional order ID and receipt. Do not provide or process payment details; no money is transferred.",
+  "source": "research/governance/EXPERIMENT_VARIABLES.md",
+  "constraints": {
+    "passengers": 2,
+    "origin": "Sydney",
+    "destination": "Canberra",
+    "outbound_local": "2030-06-15T09:00",
+    "return_local": "2030-06-17T17:00",
+    "timezone": "Australia/Sydney",
+    "class": "standard",
+    "adjacent_seats": true,
+    "budget_aud": 300,
+    "exactly_once": true,
+    "no_payment_details": true
+  }
+}
