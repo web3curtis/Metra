@@ -1,0 +1,38 @@
+{
+  "name": "webmcp-reliability",
+  "version": "1.0.0",
+  "description": "Reliability controls and agent guidance for consequential WebMCP workflows.",
+  "author": {
+    "name": "web3curtis",
+    "url": "https://github.com/web3curtis"
+  },
+  "homepage": "https://web3curtis.github.io/Metra/",
+  "repository": "https://github.com/web3curtis/Metra",
+  "license": "Apache-2.0",
+  "keywords": [
+    "webmcp",
+    "reliability",
+    "agent-safety",
+    "exactly-once"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WebMCP Reliability",
+    "shortDescription": "Safer consequential WebMCP workflows",
+    "longDescription": "Adds contract, freshness, failure semantics, diagnosis, effect-safety, and recovery guidance for browser agents using WebMCP tools.",
+    "developerName": "web3curtis",
+    "category": "Developer Tools",
+    "capabilities": [
+      "WebMCP",
+      "Reliability",
+      "Agent Safety"
+    ],
+    "websiteURL": "https://web3curtis.github.io/Metra/",
+    "defaultPrompt": [
+      "Use WebMCP reliability controls for this task.",
+      "Reconcile this ambiguous WebMCP action safely.",
+      "Stress-test this WebMCP workflow."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

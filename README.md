@@ -14,6 +14,12 @@ Purchase is **simulated only** — no payments, no real tickets.
 
 ## Quick start
 
+Live judge demo: https://web3curtis.github.io/Metra/
+
+The repository root is also a Codex-compatible plugin. Its manifest is
+`.codex-plugin/plugin.json`, and the universal agent instructions are under
+`skills/webmcp-reliability/`.
+
 ```bash
 cd prototypes/webmcp-test-app
 npm install
