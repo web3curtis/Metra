@@ -207,17 +207,70 @@ export function runIntegratedToolPolicySession(options: {
   }
 
   const opId = `op_${options.experiment_id}_r${options.repetition_index}`;
+  // D1 agent-usable: always bind operation_id when effect_safety on
   const purchaseInput = options.mechanisms.effect_safety
     ? { operation_id: opId }
     : {};
 
-  const purchase = call("purchase_tickets", purchaseInput);
+  let purchase = call("purchase_tickets", purchaseInput);
+
+  // C2 agent-usable: follow diagnosis_action when present (no blind second purchase except duplicate probe)
+  if (
+    !purchase.ok &&
+    options.mechanisms.diagnosis_policy &&
+    options.adversity !== "client_timeout_after_commit"
+  ) {
+    const diagnosis = (purchase.data as { diagnosis_action?: { action: string } } | undefined)
+      ?.diagnosis_action;
+    recorder.record({
+      component: "agent",
+      stage,
+      event_type: "playbook_follow",
+      payload: { diagnosis, followed: true },
+    });
+    if (diagnosis?.action === "reobserve") {
+      const refreshed = {
+        ...invokeOpts,
+        expectedCapabilityEpoch: "epoch:refreshed",
+        actualCapabilityEpoch: "epoch:refreshed",
+      };
+      purchase = invokeTool(store, recorder, "purchase_tickets", purchaseInput, stage, refreshed);
+    }
+    // stop / escalate / other → do not blind-retry before duplicate probe
+  }
 
   if (
     options.mechanisms.effect_safety &&
     options.adversity === "client_timeout_after_commit"
   ) {
     call("get_order", { operation_id: opId });
+  }
+
+  // After successful purchase + D2 adversity: re-observe
+  if (
+    options.mechanisms.state_recovery &&
+    options.adversity === "reload_after_review" &&
+    store.getOrder().state === "PURCHASED"
+  ) {
+    const observed = store.getOrder();
+    const decision = decideRecovery({
+      tools_include_purchase: true,
+      order_state: observed.state,
+      order_id: observed.order_id,
+      receipt_id: observed.receipt_id,
+      total_aud: observed.total_aud,
+      budget_aud: options.fixture.budget_aud,
+      seat_ids: observed.seat_ids,
+      price_drift: false,
+      seat_drift: false,
+    });
+    recoveryAction = decision.action;
+    recorder.record({
+      component: "harness",
+      stage,
+      event_type: "recovery_decision",
+      payload: decision,
+    });
   }
 
   const duplicate = call("purchase_tickets", {

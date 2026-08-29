@@ -12,5 +12,5 @@
   },
   "fresh_context_each_run": true,
   "ui_fallback_allowed": false,
-  "status": "active_playbook"
+  "status": "active_default_for_intervention"
 }

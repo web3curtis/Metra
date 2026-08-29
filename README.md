@@ -6,6 +6,8 @@ Implementation-only repository for the ReliableRail WebMCP reliability prototype
 
 A **Vite + TypeScript** web app that exposes simulated rail-booking **WebMCP tools**, plus a switchable **reliability boundary** (contract, freshness, structured failures, diagnosis, effect safety, state recovery).
 
+Implementations **A–D2** are intended to meet a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped). Proof tests: `prototypes/webmcp-test-app/tests/fiveFiveProof.test.ts`. Universal skill: `skills/webmcp-reliability/`. Plugin API: `prototypes/reliability-boundary/plugin/`.
+
 Purchase is **simulated only** — no payments, no real tickets.
 
 ## Quick start
@@ -32,6 +34,7 @@ npm run build
 | `adapters/critiqor/` | Optional one-way Critiqor event export |
 | `configurations/` | Fixtures, agent profiles, experiment Mode JSON |
 | `harness/` | Runner ownership notes |
+| `skills/webmcp-reliability/` | Universal agent skill (instruct agents to follow reliability rules) |
 
 ## License
 

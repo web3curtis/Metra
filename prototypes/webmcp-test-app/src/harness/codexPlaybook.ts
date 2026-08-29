@@ -6,7 +6,7 @@
  * - Honor diagnosis_action: reobserve | reconcile | escalate | stop
  */
 
-import type { DiagnosisAction, DiagnosisDecision } from "../../reliability-boundary/diagnosis/diagnosisPolicy.ts";
+import type { DiagnosisAction, DiagnosisDecision } from "../../../reliability-boundary/diagnosis/diagnosisPolicy.ts";
 
 export type PlaybookStep = {
   action: DiagnosisAction | "continue" | "refresh_epoch" | "inspect_evidence";

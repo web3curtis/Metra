@@ -18,12 +18,14 @@ import {
   type MechanismFlags,
 } from "./ui/experimentControls.ts";
 import { detectWebMcpLane, registerReliableRailTools } from "./webmcp/register.ts";
+import { decideRecovery } from "../../reliability-boundary/recovery/stateRecovery.ts";
 import "./style.css";
 
 const fixture = fixtureJson as Fixture;
 const store = new ReliableRailStore(fixture);
 const recorder = new EventRecorder();
 let controls: ExperimentControls = structuredClone(DEFAULT_CONTROLS);
+let lastRecovery: ReturnType<typeof decideRecovery> | null = null;
 
 function call(name: ToolName, input: Record<string, unknown> = {}) {
   const m = controls.mechanisms;
@@ -33,9 +35,39 @@ function call(name: ToolName, input: Record<string, unknown> = {}) {
     structuredSemantics: m.structured_semantics,
     diagnosisPolicy: m.diagnosis_policy,
     effectSafety: m.effect_safety,
-    // state_recovery is policy-only at UI; applied after reload adversity in harness sessions
     expectedCapabilityEpoch: "epoch:ui",
     actualCapabilityEpoch: "epoch:ui",
+  });
+}
+
+function runStateRecoveryIfEnabled(): void {
+  if (!controls.mechanisms.state_recovery) {
+    lastRecovery = null;
+    return;
+  }
+  if (
+    controls.adversity !== "reload_after_purchase" &&
+    controls.adversity !== "state_drift"
+  ) {
+    return;
+  }
+  const order = store.getOrder();
+  lastRecovery = decideRecovery({
+    tools_include_purchase: true,
+    order_state: order.state,
+    order_id: order.order_id,
+    receipt_id: order.receipt_id,
+    total_aud: order.total_aud,
+    budget_aud: fixture.budget_aud,
+    seat_ids: order.seat_ids,
+    price_drift: controls.adversity === "state_drift",
+    seat_drift: controls.adversity === "state_drift",
+  });
+  recorder.record({
+    component: "harness",
+    stage: "ui",
+    event_type: "recovery_decision",
+    payload: lastRecovery,
   });
 }
 
@@ -147,10 +179,16 @@ function render() {
       <p class="status ${oracle.ok ? "ok" : "bad"}">
         Oracle: ${oracle.ok ? "correct PURCHASED outcome" : oracle.reasons.join(", ") || "incomplete"}
       </p>
+      ${
+        lastRecovery
+          ? `<p class="meta">D2 recovery: <code>${lastRecovery.action}</code> — ${lastRecovery.rationale}</p>`
+          : ""
+      }
       <div class="grid two">
         <button id="btn-reset" type="button" class="secondary">Reset fixture</button>
         <button id="btn-script" type="button" ${baselineSafe ? "" : "disabled"}>Run scripted happy path</button>
       </div>
+      <button id="btn-recovery" type="button" class="secondary">Run D2 re-observe (if enabled)</button>
     </section>
   `;
 
@@ -168,14 +206,17 @@ function render() {
       mechanisms[key] = input.checked;
     }
     controls = { condition, adversity, mechanisms };
+    runStateRecoveryIfEnabled();
     render();
   });
   document.querySelector("#btn-reset-controls")?.addEventListener("click", () => {
     controls = structuredClone(DEFAULT_CONTROLS);
+    lastRecovery = null;
     render();
   });
   document.querySelector("#btn-reset")?.addEventListener("click", () => {
     call("reset_fixture");
+    lastRecovery = null;
     render();
   });
   document.querySelector("#btn-script")?.addEventListener("click", () => {
@@ -183,6 +224,29 @@ function render() {
       return;
     }
     runScriptedHappyPath(store, recorder, "ui-script");
+    runStateRecoveryIfEnabled();
+    render();
+  });
+  document.querySelector("#btn-recovery")?.addEventListener("click", () => {
+    if (!controls.mechanisms.state_recovery) return;
+    const order = store.getOrder();
+    lastRecovery = decideRecovery({
+      tools_include_purchase: true,
+      order_state: order.state,
+      order_id: order.order_id,
+      receipt_id: order.receipt_id,
+      total_aud: order.total_aud,
+      budget_aud: fixture.budget_aud,
+      seat_ids: order.seat_ids,
+      price_drift: controls.adversity === "state_drift",
+      seat_drift: controls.adversity === "state_drift",
+    });
+    recorder.record({
+      component: "harness",
+      stage: "ui",
+      event_type: "recovery_decision",
+      payload: lastRecovery,
+    });
     render();
   });
 }
