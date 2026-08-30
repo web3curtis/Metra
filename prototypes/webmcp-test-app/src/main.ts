@@ -40,6 +40,10 @@ import {
   saveEffectRegistry,
   saveLedger,
 } from "./persist/sessionPersist.ts";
+import {
+  runSideBySideComparison,
+  type SideBySideResult,
+} from "./harness/sideBySideComparison.ts";
 import "./style.css";
 
 const fixture = fixtureJson as Fixture;
@@ -56,6 +60,8 @@ let purchaseBlockedByRecovery = false;
 let diagnosisGate: DiagnosisGateState = createDiagnosisGate();
 let diagnosisReconciled = false;
 let diagnosisReobserved = false;
+let lastComparison: SideBySideResult | null = null;
+let compareAdversity: AdversityId = "client_timeout_after_commit";
 
 const persistedControls = loadControls();
 if (persistedControls) controls = persistedControls;
@@ -297,6 +303,69 @@ function render() {
       </div>
     </section>
 
+    <section class="panel judge">
+      <h2>Judge: raw WebMCP vs prototype (same train-ticket task)</h2>
+      <p class="meta">Identical Sydney↔Canberra objective + matched adversity receipt. Watch both arms in real time. Improvement is claimed only when comparison_valid and traces show reduced impact.</p>
+      <label>Shared adversity for paired run
+        <select id="ctl-compare-adversity">
+          <option value="none">none (happy path — expect equal)</option>
+          <option value="contract_ambiguity">contract_ambiguity</option>
+          <option value="capability_change">capability_change</option>
+          <option value="opaque_failure">opaque_failure</option>
+          <option value="client_timeout_after_commit">client_timeout_after_commit</option>
+          <option value="reload_after_purchase">reload_after_purchase</option>
+        </select>
+      </label>
+      <button id="btn-sidebyside" type="button">Run side-by-side comparison now</button>
+      ${
+        lastComparison
+          ? `<p class="status ${lastComparison.comparison_valid ? "ok" : "bad"}">
+              comparison_valid=${lastComparison.comparison_valid}
+              · improvement=<code>${lastComparison.improvement}</code>
+              — ${lastComparison.summary}
+            </p>
+            <div class="compare-grid">
+              <div class="arm raw">
+                <h3>Raw WebMCP</h3>
+                <p>commits <code>${lastComparison.raw.committed_purchase_count}</code>
+                  · state <code>${lastComparison.raw.order_state}</code>
+                  · oracle <code>${lastComparison.raw.oracle_ok}</code>
+                  · calls <code>${lastComparison.raw.total_tool_calls}</code></p>
+                <p class="meta">error: <code>${lastComparison.raw.last_error ?? "none"}</code></p>
+                <pre>${JSON.stringify(
+                  {
+                    diagnosis: lastComparison.raw.diagnosis_action,
+                    structured_failure: lastComparison.raw.structured_failure,
+                    trace: lastComparison.raw.trace,
+                  },
+                  null,
+                  2,
+                )}</pre>
+              </div>
+              <div class="arm proto">
+                <h3>Prototype (A–D2)</h3>
+                <p>commits <code>${lastComparison.prototype.committed_purchase_count}</code>
+                  · state <code>${lastComparison.prototype.order_state}</code>
+                  · oracle <code>${lastComparison.prototype.oracle_ok}</code>
+                  · calls <code>${lastComparison.prototype.total_tool_calls}</code>
+                  · op <code>${lastComparison.prototype.operation_id ?? "none"}</code>
+                  · recovery <code>${lastComparison.prototype.recovery_action ?? "none"}</code></p>
+                <p class="meta">error: <code>${lastComparison.prototype.last_error ?? "none"}</code></p>
+                <pre>${JSON.stringify(
+                  {
+                    diagnosis: lastComparison.prototype.diagnosis_action,
+                    structured_failure: lastComparison.prototype.structured_failure,
+                    trace: lastComparison.prototype.trace,
+                  },
+                  null,
+                  2,
+                )}</pre>
+              </div>
+            </div>`
+          : `<p class="meta">No paired run yet — choose adversity and click run.</p>`
+      }
+    </section>
+
     <section class="panel">
       <h2>Mode / runtime</h2>
       <div class="meta">
@@ -351,6 +420,20 @@ function render() {
 
   const adv = document.querySelector<HTMLSelectElement>("#ctl-adversity");
   if (adv) adv.value = controls.adversity;
+  const cmpAdv = document.querySelector<HTMLSelectElement>("#ctl-compare-adversity");
+  if (cmpAdv) cmpAdv.value = compareAdversity;
+
+  document.querySelector("#btn-sidebyside")?.addEventListener("click", () => {
+    const selected =
+      (document.querySelector<HTMLSelectElement>("#ctl-compare-adversity")
+        ?.value as AdversityId) ?? "client_timeout_after_commit";
+    compareAdversity = selected;
+    lastComparison = runSideBySideComparison({
+      fixture,
+      adversity: selected,
+    });
+    render();
+  });
 
   document.querySelector("#btn-apply-controls")?.addEventListener("click", () => {
     const condition = document.querySelector<HTMLSelectElement>("#ctl-condition")

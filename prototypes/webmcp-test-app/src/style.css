@@ -23,7 +23,7 @@ body {
 }
 
 #app {
-  max-width: 960px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 2rem 1.25rem 4rem;
 }
@@ -151,4 +151,41 @@ select {
   flex-direction: row;
   align-items: center;
   gap: 0.5rem;
+}
+
+.panel.judge {
+  border-color: var(--rail);
+}
+
+.compare-grid {
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+@media (min-width: 800px) {
+  .compare-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.arm h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.arm.raw {
+  border-left: 3px solid var(--accent);
+  padding-left: 0.75rem;
+}
+
+.arm.proto {
+  border-left: 3px solid var(--ok);
+  padding-left: 0.75rem;
+}
+
+.arm pre {
+  max-height: 280px;
+  overflow: auto;
+  font-size: 0.78rem;
 }
