@@ -98,7 +98,7 @@ export function runMatchedImpactBatch(options: {
       task_success: Boolean(cSession.metrics.task_success),
       first_purchase_reported_ok: Boolean(cSession.metrics.first_purchase_reported_ok),
       total_tool_calls: Number(cSession.metrics.total_tool_calls ?? 0),
-      session_id: cSession.session_id,
+      session_id: cSession.run_id,
     });
 
     const tSession = runIntegratedToolPolicySession({
@@ -122,7 +122,7 @@ export function runMatchedImpactBatch(options: {
       task_success: Boolean(tSession.metrics.task_success),
       first_purchase_reported_ok: Boolean(tSession.metrics.first_purchase_reported_ok),
       total_tool_calls: Number(tSession.metrics.total_tool_calls ?? 0),
-      session_id: tSession.session_id,
+      session_id: tSession.run_id,
     });
   }
 
