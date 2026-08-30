@@ -14,6 +14,7 @@ export type AdversityId =
   | "contract_ambiguity"
   | "capability_change"
   | "opaque_failure"
+  | "client_timeout_after_commit"
   | "reload_after_purchase"
   | "state_drift";
 

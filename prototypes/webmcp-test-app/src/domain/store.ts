@@ -63,6 +63,13 @@ export class ReliableRailStore {
     return this.getOrder();
   }
 
+  /** Rehydrate authoritative ledger after real reload (D2). */
+  hydrateOrder(snapshot: OrderSnapshot): OrderSnapshot {
+    this.order = structuredClone(snapshot);
+    this.seq = snapshot.state_revision;
+    return this.getOrder();
+  }
+
   private bump(next: Partial<OrderSnapshot> & { state: OrderSnapshot["state"] }) {
     this.order = {
       ...this.order,

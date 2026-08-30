@@ -90,6 +90,8 @@ export function invokeTool(
     simulatePurchaseTimeoutUnknown?: boolean;
     /** Adversity: server committed but client only sees timeout */
     simulateClientTimeoutAfterCommit?: boolean;
+    /** Adversity: identical opaque error before domain (fair control/treatment) */
+    injectOpaqueError?: string;
     expectedCapabilityEpoch?: string;
     actualCapabilityEpoch?: string;
   } = {},
@@ -191,6 +193,18 @@ export function invokeTool(
     }
   }
 
+  // Shared adversity: opaque failure identical for raw and treatment (before domain)
+  if (options.injectOpaqueError && name === "purchase_tickets") {
+    return finish(
+      {
+        ok: false,
+        error: options.injectOpaqueError,
+        data: { adversity: "opaque_failure" },
+      },
+      { adversity: "opaque_failure" },
+    );
+  }
+
   let result: ToolResult;
   switch (name) {
     case "search_journeys":
@@ -218,6 +232,23 @@ export function invokeTool(
       result = store.reviewOrder();
       break;
     case "purchase_tickets": {
+      // Shared adversity: commit then client-timeout — works with OR without D1
+      if (options.simulateClientTimeoutAfterCommit && !options.effectSafety) {
+        const committed = store.purchaseTickets();
+        if (committed.ok) {
+          result = {
+            ok: false,
+            error: "purchase_timeout_unknown",
+            data: {
+              note: "Client timeout after possible commit (raw/control path)",
+              prior: committed.data,
+            },
+          };
+        } else {
+          result = committed;
+        }
+        break;
+      }
       if (options.effectSafety) {
         const registry = options.effectRegistry ?? new Map<string, EffectRecord>();
         const operationId =

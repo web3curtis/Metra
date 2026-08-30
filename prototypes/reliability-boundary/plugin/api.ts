@@ -22,6 +22,12 @@ export {
   type DiagnosisDecision,
 } from "../diagnosis/diagnosisPolicy.ts";
 export {
+  applyDiagnosisDecision,
+  allowConsequentialCall,
+  createDiagnosisGate,
+  type DiagnosisGateState,
+} from "../diagnosis/diagnosisExecutor.ts";
+export {
   beginEffect,
   markCommitted,
   markUnknown,

@@ -65,7 +65,7 @@ export function envelopeFromToolError(input: {
       expected: "ORDER_REVIEWED_and_contract_ok",
       actual: input.state,
       owner: "reliability_boundary",
-      recoverability: "automatic",
+      recoverability: "non_recoverable",
       state_revision: input.state_revision,
       evidence: ["contract_v0_validateCall"],
     });
@@ -79,7 +79,22 @@ export function envelopeFromToolError(input: {
       owner: "reliability_boundary",
       recoverability: "automatic",
       state_revision: input.state_revision,
-      evidence: ["capability_freshness_rejectStaleConsequential"],
+      evidence: ["capability_freshness_rejectStaleConsequential", "required_action:reobserve"],
+    });
+  }
+  if (
+    input.error === "purchase_timeout_unknown" ||
+    input.error === "ambiguous_commit"
+  ) {
+    return buildStructuredFailure({
+      category: "ambiguous_commit",
+      tool: input.tool,
+      expected: "confirmed_commit_or_absent",
+      actual: input.error,
+      owner: "session",
+      recoverability: "automatic",
+      state_revision: input.state_revision,
+      evidence: ["client_timeout_after_possible_commit", "required_action:reconcile"],
     });
   }
   return buildStructuredFailure({
