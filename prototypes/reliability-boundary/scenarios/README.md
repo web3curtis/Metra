@@ -46,3 +46,7 @@ npm test -- tests/portabilityStatic.test.ts
 ## ReliableRail adapter
 
 The ReliableRail fixture descriptor points at `configurations/fixtures/fixture-v0.json` via `externalFixtureRef`. Loading that JSON and wiring `ReliableRailStore` belongs in a **site adapter** (e.g. under `prototypes/webmcp-test-app/`), not in this scenarios core.
+
+## WorkBoard adapter (G1 portability)
+
+Minimal live app: `prototypes/workboard-webmcp-app/` — Vite+TS, `create_issue` / `transition_issue` / `list_projects`, reliability-boundary plugin imports, localStorage D2 persist. See that app’s README for run/test commands.
