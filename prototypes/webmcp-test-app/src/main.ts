@@ -21,6 +21,13 @@ import { detectWebMcpLane, registerReliableRailTools } from "./webmcp/register.t
 import { decideRecovery } from "../../reliability-boundary/recovery/stateRecovery.ts";
 import type { EffectRecord } from "../../reliability-boundary/effect/effectSafety.ts";
 import {
+  allowConsequentialCall,
+  applyDiagnosisDecision,
+  createDiagnosisGate,
+  type DiagnosisGateState,
+} from "../../reliability-boundary/diagnosis/diagnosisExecutor.ts";
+import type { DiagnosisDecision } from "../../reliability-boundary/diagnosis/diagnosisPolicy.ts";
+import {
   createAdversityReceipt,
   type AdversityReceipt,
 } from "./adversity/adversityEngine.ts";
@@ -46,6 +53,9 @@ let lastToolResult: ToolResult | null = null;
 let lastAdversityReceipt: AdversityReceipt | null = null;
 let capabilityEpoch = "epoch:ui";
 let purchaseBlockedByRecovery = false;
+let diagnosisGate: DiagnosisGateState = createDiagnosisGate();
+let diagnosisReconciled = false;
+let diagnosisReobserved = false;
 
 const persistedControls = loadControls();
 if (persistedControls) controls = persistedControls;
@@ -125,6 +135,26 @@ function call(name: ToolName, input: Record<string, unknown> = {}): ToolResult {
     return blocked;
   }
 
+  if (name === "purchase_tickets" && m.diagnosis_policy) {
+    const gateCheck = allowConsequentialCall(diagnosisGate, {
+      reconciled: diagnosisReconciled,
+      reobserved: diagnosisReobserved,
+    });
+    if (!gateCheck.ok) {
+      const blocked: ToolResult = {
+        ok: false,
+        error: gateCheck.code,
+        data: { diagnosis_gate: diagnosisGate, adversity_receipt: receipt },
+      };
+      lastToolResult = blocked;
+      return blocked;
+    }
+  }
+
+  if (name === "get_order" && typeof input.operation_id === "string") {
+    diagnosisReconciled = true;
+  }
+
   const timeoutAdversity =
     controls.adversity === "client_timeout_after_commit" && name === "purchase_tickets";
 
@@ -157,6 +187,29 @@ function call(name: ToolName, input: Record<string, unknown> = {}): ToolResult {
       adversity_receipt: receipt,
     },
   };
+
+  if (m.diagnosis_policy && !result.ok && result.data && typeof result.data === "object") {
+    const decision = (result.data as { diagnosis_action?: DiagnosisDecision }).diagnosis_action;
+    if (decision) {
+      diagnosisGate = applyDiagnosisDecision(diagnosisGate, decision);
+      if (decision.action === "reobserve") {
+        diagnosisReobserved = false;
+        capabilityEpoch = "epoch:ui";
+      }
+      if (decision.action === "reconcile") {
+        diagnosisReconciled = false;
+      }
+    }
+  }
+
+  if (controls.adversity === "capability_change" && name !== "purchase_tickets") {
+    // After reobserve-style rediscovery, allow refresh
+    if (name === "search_journeys" || name === "list_available_seats") {
+      diagnosisReobserved = true;
+      capabilityEpoch = receipt.payload.new_epoch ?? capabilityEpoch;
+    }
+  }
+
   persistSession();
   return lastToolResult;
 }
@@ -330,6 +383,9 @@ function render() {
     lastRecovery = null;
     purchaseBlockedByRecovery = false;
     lastToolResult = null;
+    diagnosisGate = createDiagnosisGate();
+    diagnosisReconciled = false;
+    diagnosisReobserved = false;
     refreshAdversityReceipt();
     render();
   });

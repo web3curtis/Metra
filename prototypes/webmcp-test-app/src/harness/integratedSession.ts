@@ -58,7 +58,11 @@ export function runIntegratedToolPolicySession(options: {
   condition?: "baseline" | "intervention";
   stage_id?: string;
   preferAlternateSeats?: boolean;
-  adversity?: "none" | "client_timeout_after_commit" | "reload_after_review";
+  adversity?:
+    | "none"
+    | "client_timeout_after_commit"
+    | "reload_after_review"
+    | "duplicate_purchase_probe";
   /** Epoch pair for freshness gate when capability_freshness on and no adversity */
   capabilityEpochs?: { expected: string; actual: string };
 }): SessionResult {
@@ -273,9 +277,13 @@ export function runIntegratedToolPolicySession(options: {
     });
   }
 
-  const duplicate = call("purchase_tickets", {
-    ...(options.mechanisms.effect_safety ? { operation_id: `${opId}_dup` } : {}),
-  });
+  // Duplicate probe only as labelled adversity (not default agent policy)
+  const duplicate =
+    options.adversity === "duplicate_purchase_probe"
+      ? call("purchase_tickets", {
+          ...(options.mechanisms.effect_safety ? { operation_id: `${opId}_dup` } : {}),
+        })
+      : { ok: false as const, error: "duplicate_probe_not_requested" };
 
   call("get_order", purchaseInput);
 
