@@ -8,9 +8,19 @@ A **Vite + TypeScript** web app that exposes simulated rail-booking **WebMCP too
 
 Implementations **A–D2** are intended to meet a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped).
 
-Proof tests: `prototypes/webmcp-test-app/tests/fiveFiveProof.test.ts`. Universal skill: `skills/webmcp-reliability/`. Plugin API: `prototypes/reliability-boundary/plugin/`.
+## Surfaces
 
-Purchase is **simulated only** — no payments, no real tickets.
+| Mode | Role |
+|---|---|
+| **Booking platform** | Syd–CBR ticket mimic + adversities + full A–D2 battery |
+| **Lab** | Mechanism flags, tools, per-adversity side-by-side |
+
+Live: https://web3curtis.github.io/Metra/
+
+## Quality
+
+5/5 = multi-adversity battery on ReliableRail (see local `summary/FIVE_FIVE_FOR_CODEX.md` when provided). Plugin: `.codex-plugin/` + `skills/webmcp-reliability/`.
+
 
 ## Quick start
 

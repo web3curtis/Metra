@@ -184,8 +184,57 @@ select {
   padding-left: 0.75rem;
 }
 
-.arm pre {
-  max-height: 280px;
-  overflow: auto;
-  font-size: 0.78rem;
+.view-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.view-tabs button.active {
+  background: var(--rail);
+  color: #fff;
+  border-color: var(--rail);
+}
+
+.step-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+}
+
+.step-pill {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.45rem;
+  opacity: 0.55;
+}
+
+.step-pill.on {
+  opacity: 1;
+  border-color: var(--rail);
+  color: var(--rail);
+  font-weight: 600;
+}
+
+.booking-card {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 0.85rem;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+@media (min-width: 720px) {
+  .booking-card {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.battery ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
 }

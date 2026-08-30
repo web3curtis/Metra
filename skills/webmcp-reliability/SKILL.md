@@ -39,6 +39,8 @@ Improve predictability and reliability of WebMCP tool use—the same class of tr
 
 ## Reference implementation
 
+Install for Codex: [`INSTALL.md`](./INSTALL.md) · Manifest: `.codex-plugin/plugin.json`
+
 Plugin API (site-agnostic):
 
 `prototypes/reliability-boundary/plugin/api.ts`

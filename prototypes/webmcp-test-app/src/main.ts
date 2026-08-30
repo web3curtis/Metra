@@ -44,6 +44,17 @@ import {
   runSideBySideComparison,
   type SideBySideResult,
 } from "./harness/sideBySideComparison.ts";
+import {
+  runFullAdversityBattery,
+  type BatteryReport,
+} from "./harness/fullAdversityBattery.ts";
+import {
+  initialBookingView,
+  nextBookingStep,
+  runBookingStressComparison,
+  type BookingViewModel,
+} from "./booking/bookingMimic.ts";
+import { renderBookingSurface, renderViewTabs } from "./ui/views.ts";
 import "./style.css";
 
 const fixture = fixtureJson as Fixture;
@@ -62,6 +73,10 @@ let diagnosisReconciled = false;
 let diagnosisReobserved = false;
 let lastComparison: SideBySideResult | null = null;
 let compareAdversity: AdversityId = "client_timeout_after_commit";
+let viewMode: "lab" | "booking" = "booking";
+let booking: BookingViewModel = initialBookingView(fixture);
+let lastBattery: BatteryReport | null = null;
+let bookingComparison: SideBySideResult | null = null;
 
 const persistedControls = loadControls();
 if (persistedControls) controls = persistedControls;
@@ -261,12 +276,14 @@ function render() {
     )
     .join("");
 
-  app.innerHTML = `
-    <header class="brand">
-      <h1>ReliableRail</h1>
-      <p>Simulated Sydney–Canberra sandbox for WebMCP reliability experiments. No real tickets, payments, or credentials.</p>
-    </header>
+  const bookingHtml = renderBookingSurface({
+    fixture,
+    booking,
+    battery: lastBattery,
+    comparison: bookingComparison,
+  });
 
+  const labHtml = `
     <section class="panel">
       <h2>Experiment controls</h2>
       <p class="meta">A–D2 mechanisms switchable below. Baseline/calibration require all mechanisms off. Purchase is simulated only.</p>
@@ -305,18 +322,27 @@ function render() {
 
     <section class="panel judge">
       <h2>Judge: raw WebMCP vs prototype (same train-ticket task)</h2>
-      <p class="meta">Identical Sydney↔Canberra objective + matched adversity receipt. Watch both arms in real time. Improvement is claimed only when comparison_valid and traces show reduced impact.</p>
+      <p class="meta">Identical Sydney↔Canberra objective + matched adversity receipt.</p>
       <label>Shared adversity for paired run
         <select id="ctl-compare-adversity">
           <option value="none">none (happy path — expect equal)</option>
-          <option value="contract_ambiguity">contract_ambiguity</option>
-          <option value="capability_change">capability_change</option>
-          <option value="opaque_failure">opaque_failure</option>
-          <option value="client_timeout_after_commit">client_timeout_after_commit</option>
-          <option value="reload_after_purchase">reload_after_purchase</option>
+          <option value="contract_ambiguity">contract_ambiguity (A)</option>
+          <option value="capability_change">capability_change (B)</option>
+          <option value="opaque_failure">opaque_failure (C1)</option>
+          <option value="client_timeout_after_commit">client_timeout_after_commit (C2/D1)</option>
+          <option value="reload_after_purchase">reload_after_purchase (D2)</option>
         </select>
       </label>
-      <button id="btn-sidebyside" type="button">Run side-by-side comparison now</button>
+      <div class="grid two">
+        <button id="btn-sidebyside" type="button">Run side-by-side comparison now</button>
+        <button id="btn-lab-battery" type="button" class="secondary">Run full A–D2 battery</button>
+      </div>
+      ${
+        lastBattery
+          ? `<p class="status ${lastBattery.all_pass ? "ok" : "bad"}">${lastBattery.summary}</p>
+             <ul>${lastBattery.cells.map((c) => `<li><strong>${c.impl}</strong> ${c.pass ? "PASS" : "FAIL"} — <code>${c.adversity}</code></li>`).join("")}</ul>`
+          : ""
+      }
       ${
         lastComparison
           ? `<p class="status ${lastComparison.comparison_valid ? "ok" : "bad"}">
@@ -329,40 +355,18 @@ function render() {
                 <h3>Raw WebMCP</h3>
                 <p>commits <code>${lastComparison.raw.committed_purchase_count}</code>
                   · state <code>${lastComparison.raw.order_state}</code>
-                  · oracle <code>${lastComparison.raw.oracle_ok}</code>
-                  · calls <code>${lastComparison.raw.total_tool_calls}</code></p>
-                <p class="meta">error: <code>${lastComparison.raw.last_error ?? "none"}</code></p>
-                <pre>${JSON.stringify(
-                  {
-                    diagnosis: lastComparison.raw.diagnosis_action,
-                    structured_failure: lastComparison.raw.structured_failure,
-                    trace: lastComparison.raw.trace,
-                  },
-                  null,
-                  2,
-                )}</pre>
+                  · oracle <code>${lastComparison.raw.oracle_ok}</code></p>
+                <pre>${JSON.stringify({ error: lastComparison.raw.last_error, trace: lastComparison.raw.trace }, null, 2)}</pre>
               </div>
               <div class="arm proto">
                 <h3>Prototype (A–D2)</h3>
                 <p>commits <code>${lastComparison.prototype.committed_purchase_count}</code>
                   · state <code>${lastComparison.prototype.order_state}</code>
-                  · oracle <code>${lastComparison.prototype.oracle_ok}</code>
-                  · calls <code>${lastComparison.prototype.total_tool_calls}</code>
-                  · op <code>${lastComparison.prototype.operation_id ?? "none"}</code>
                   · recovery <code>${lastComparison.prototype.recovery_action ?? "none"}</code></p>
-                <p class="meta">error: <code>${lastComparison.prototype.last_error ?? "none"}</code></p>
-                <pre>${JSON.stringify(
-                  {
-                    diagnosis: lastComparison.prototype.diagnosis_action,
-                    structured_failure: lastComparison.prototype.structured_failure,
-                    trace: lastComparison.prototype.trace,
-                  },
-                  null,
-                  2,
-                )}</pre>
+                <pre>${JSON.stringify({ error: lastComparison.prototype.last_error, diagnosis: lastComparison.prototype.diagnosis_action, structured_failure: lastComparison.prototype.structured_failure, trace: lastComparison.prototype.trace }, null, 2)}</pre>
               </div>
             </div>`
-          : `<p class="meta">No paired run yet — choose adversity and click run.</p>`
+          : `<p class="meta">No paired run yet.</p>`
       }
     </section>
 
@@ -371,10 +375,8 @@ function render() {
       <div class="meta">
         Fixture <code>${fixture.fixture_version}</code> ·
         State <code>${order.state}</code> ·
-        Revision <code>${order.state_revision}</code> ·
         Committed <code>${order.committed_purchase_count}</code> ·
         WebMCP lane <code>${lane.lane}</code>
-        ${lane.failClosed ? ` · <span class="status bad">fail-closed: ${lane.reason}</span>` : ""}
       </div>
       <p>${registration.detail}</p>
       <ul class="tools">
@@ -383,7 +385,7 @@ function render() {
         <li><code>list_available_seats</code></li>
         <li><code>reserve_seats</code></li>
         <li><code>review_order</code></li>
-        <li><code>purchase_tickets</code> (simulated finalize)</li>
+        <li><code>purchase_tickets</code></li>
         <li><code>get_order</code></li>
         <li><code>cancel_draft</code></li>
       </ul>
@@ -400,11 +402,6 @@ function render() {
       <p class="status ${oracle.ok ? "ok" : "bad"}">
         Oracle: ${oracle.ok ? "correct PURCHASED outcome" : oracle.reasons.join(", ") || "incomplete"}
       </p>
-      ${
-        lastRecovery
-          ? `<p class="meta">D2 recovery: <code>${lastRecovery.action}</code> — ${lastRecovery.rationale} (enforced=${purchaseBlockedByRecovery})</p>`
-          : ""
-      }
       <h3>Last tool result</h3>
       <pre>${JSON.stringify(lastToolResult, null, 2)}</pre>
       <div class="grid two">
@@ -418,6 +415,57 @@ function render() {
     </section>
   `;
 
+  app.innerHTML = `
+    <header class="brand">
+      <h1>ReliableRail</h1>
+      <p>Simulated Sydney–Canberra ticket track for WebMCP reliability. No real tickets, payments, or credentials.</p>
+    </header>
+    ${renderViewTabs(viewMode)}
+    ${viewMode === "booking" ? bookingHtml : labHtml}
+  `;
+
+  document.querySelector("#tab-booking")?.addEventListener("click", () => {
+    viewMode = "booking";
+    render();
+  });
+  document.querySelector("#tab-lab")?.addEventListener("click", () => {
+    viewMode = "lab";
+    render();
+  });
+
+  if (viewMode === "booking") {
+    const advSel = document.querySelector<HTMLSelectElement>("#ctl-booking-adversity");
+    if (advSel) advSel.value = booking.stress_adversity;
+    document.querySelector("#btn-booking-next")?.addEventListener("click", () => {
+      if (booking.step === "done") {
+        booking = initialBookingView(fixture);
+        bookingComparison = null;
+        render();
+        return;
+      }
+      if (booking.step === "confirm") {
+        const selected =
+          (document.querySelector<HTMLSelectElement>("#ctl-booking-adversity")
+            ?.value as AdversityId) ?? booking.stress_adversity;
+        booking.stress_adversity = selected;
+        bookingComparison = runBookingStressComparison(fixture, selected);
+        booking.step = "done";
+        render();
+        return;
+      }
+      const fromSel = document.querySelector<HTMLSelectElement>("#ctl-booking-adversity");
+      if (fromSel) booking.stress_adversity = fromSel.value as AdversityId;
+      booking.step = nextBookingStep(booking.step);
+      render();
+    });
+    document.querySelector("#btn-booking-battery")?.addEventListener("click", () => {
+      lastBattery = runFullAdversityBattery(fixture);
+      bookingComparison = null;
+      render();
+    });
+    return;
+  }
+
   const adv = document.querySelector<HTMLSelectElement>("#ctl-adversity");
   if (adv) adv.value = controls.adversity;
   const cmpAdv = document.querySelector<HTMLSelectElement>("#ctl-compare-adversity");
@@ -428,13 +476,13 @@ function render() {
       (document.querySelector<HTMLSelectElement>("#ctl-compare-adversity")
         ?.value as AdversityId) ?? "client_timeout_after_commit";
     compareAdversity = selected;
-    lastComparison = runSideBySideComparison({
-      fixture,
-      adversity: selected,
-    });
+    lastComparison = runSideBySideComparison({ fixture, adversity: selected });
     render();
   });
-
+  document.querySelector("#btn-lab-battery")?.addEventListener("click", () => {
+    lastBattery = runFullAdversityBattery(fixture);
+    render();
+  });
   document.querySelector("#btn-apply-controls")?.addEventListener("click", () => {
     const condition = document.querySelector<HTMLSelectElement>("#ctl-condition")
       ?.value as DemoCondition;
