@@ -188,6 +188,38 @@ describe("live registered-path falsifier", () => {
     expect(runtime.effectCount()).toBe(1);
   });
 
+  it("F7 refuses a coercible but wrongly typed expected_revision", () => {
+    const { runtime, call } = registerNativeSuite();
+    call("support.search_help", {});
+    call("support.get_customer_context", {});
+
+    // The declared schema says integer. A string that Number() would happily
+    // coerce to 1 must still fail the contract rather than commit.
+    const coerced = call("support.create_support_ticket", {
+      operation_id: "codex-coerce-001",
+      expected_revision: "1",
+    });
+    log("F7_coerced_revision", "support.create_support_ticket", { operation_id: "codex-coerce-001", expected_revision: "1" }, coerced);
+
+    expect(coerced.ok).toBe(false);
+    expect(coerced.error).toBe("contract_violation");
+    expect(runtime.effectCount()).toBe(0);
+    // A contract violation is not self-healing; the only legal move is to stop.
+    expect(coerced.allowed_next_action).toBe("stop");
+
+    // The same sequence with a genuine integer commits, so the rejection above
+    // is caused by the type and not by the ordering.
+    const fresh = registerNativeSuite();
+    fresh.call("support.search_help", {});
+    fresh.call("support.get_customer_context", {});
+    const valid = fresh.call("support.create_support_ticket", {
+      operation_id: "codex-coerce-002",
+      expected_revision: 1,
+    });
+    expect(valid.ok).toBe(true);
+    expect(fresh.runtime.effectCount()).toBe(1);
+  });
+
   it("F6 exposes A-D2 mechanism evidence in one live trace", () => {
     const { call, registration, runtime } = registerNativeSuite();
     call("support.create_support_ticket", { operation_id: "codex-trace-001", expected_revision: 1 });

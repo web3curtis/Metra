@@ -252,17 +252,40 @@ function refuse(input: {
   };
 }
 
-/** A — argument/shape validation against the machine-enforced contract. */
+/** The subset of JSON Schema the registered tools actually declare. */
+type ArgSpec = {
+  type?: string;
+  minimum?: number;
+  minLength?: number;
+};
+
+/**
+ * A — argument/shape validation against the machine-enforced contract.
+ *
+ * Constraints are read from the tool's declared input schema rather than
+ * restated here, so a value the schema forbids cannot be coerced into an
+ * accepted one. A string "1" is not an integer, and must fail closed.
+ */
 function validateShape(
   contract: SuiteToolContract,
   args: Record<string, unknown>,
+  inputSchema: Record<string, unknown>,
 ): { ok: true } | { ok: false; detail: string } {
+  const properties = (inputSchema.properties ?? {}) as Record<string, ArgSpec>;
   for (const key of contract.shape.required_args) {
     const value = args[key];
-    if (key === "expected_revision") {
-      if (!Number.isInteger(Number(value))) return { ok: false, detail: `expected_revision_not_integer` };
+    const spec = properties[key] ?? {};
+
+    if (spec.type === "integer") {
+      if (typeof value !== "number" || !Number.isInteger(value)) {
+        return { ok: false, detail: `${key}_not_integer` };
+      }
+      if (spec.minimum !== undefined && value < spec.minimum) {
+        return { ok: false, detail: `${key}_below_minimum` };
+      }
       continue;
     }
+
     if (typeof value !== "string" || value.length === 0) {
       return { ok: false, detail: `missing_${key}` };
     }
@@ -320,7 +343,7 @@ export function createEnforcedHandler(input: {
     }
 
     // A — contract validation happens before the domain handler is reachable.
-    const shape = validateShape(contract, args);
+    const shape = validateShape(contract, args, tool.inputSchema);
     mechanisms.push("A");
     emit(protocol, "A", "contract_validate", {
       tool: toolId,
