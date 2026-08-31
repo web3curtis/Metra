@@ -20,7 +20,8 @@ import {
   type StructuredFailure,
 } from "../../../reliability-boundary/semantics/structuredFailure.ts";
 import type { ProtocolRunContext } from "../../../reliability-boundary/spine/protocolSpine.ts";
-import type { LabTool, UseCase } from "../lab/catalog.ts";
+import { recoveryPolicySupports } from "../../../reliability-boundary/recovery/stateRecovery.ts";
+import { COMMITTED_EFFECT_STATES, type LabTool, type UseCase } from "../lab/catalog.ts";
 import { getSuiteToolContract, producerOf, type SuiteToolContract } from "../lab/suiteContracts.ts";
 
 export type Mechanism = "A" | "B" | "C1" | "C2" | "D1" | "D2";
@@ -37,7 +38,13 @@ export type BoundaryEnvelope = {
   stale_evidence?: string[];
   allowed_next_action?: NextAction;
   next_tool?: string | null;
+  /** Effects the boundary has confirmed against authority. Never a handler claim. */
   effect_count: number;
+  /** Present when authority and the boundary mirror could disagree. */
+  authoritative_effect_count?: number | null;
+  boundary_claimed_effect_count?: number;
+  commit_status?: "none" | "committed" | "possible" | "rejected";
+  authority?: "authoritative" | "client_only" | "unavailable";
   structured_failure?: StructuredFailure;
   mechanisms: Mechanism[];
   checkpoint_id?: string;
@@ -51,16 +58,6 @@ type ObservationMirror = {
 };
 
 /**
- * An operation_id names one effect inside one application. The same session is
- * shared by every registered tool, so the committed phase has to be looked up
- * under the use case that produced it. A session-global key would let app A's
- * commit answer app B's duplicate question.
- */
-function effectScope(useCaseId: string, operationId: string): string {
-  return `${useCaseId}\u0000${operationId}`;
-}
-
-/**
  * Boundary state shared by every tool registered in one session. Mirrors only what
  * the boundary observes through registered calls, so it stays truthful even if the
  * domain runtime is swapped out.
@@ -68,11 +65,31 @@ function effectScope(useCaseId: string, operationId: string): string {
 export class BoundarySession {
   readonly journal = new EffectJournal();
   private readonly observations = new Map<string, Map<string, ObservationMirror>>();
+  /** Keyed by tool and operation id, never by a raw operation id. */
   private readonly committed = new Map<string, EffectPhase>();
-  private readonly operationOwners = new Map<string, string>();
+  /** Which tool and intent first claimed an operation id, so it cannot be reused. */
+  private readonly operationOwners = new Map<string, { tool_id: string; intent_fingerprint: string }>();
   private readonly checkpoints: VerifiedCheckpoint[] = [];
   private revision = 1;
   private effects = 0;
+  /** The tool currently inside the boundary, so re-entrant calls can be refused. */
+  private inFlight: string | null = null;
+
+  isDispatching(): boolean {
+    return this.inFlight !== null;
+  }
+
+  dispatchingTool(): string | null {
+    return this.inFlight;
+  }
+
+  beginDispatch(toolId: string): void {
+    this.inFlight = toolId;
+  }
+
+  endDispatch(): void {
+    this.inFlight = null;
+  }
 
   currentRevision(): number {
     return this.revision;
@@ -90,19 +107,48 @@ export class BoundarySession {
     return this.checkpoints.at(-1) ?? null;
   }
 
-  phaseOf(useCaseId: string, operationId: string): EffectPhase {
-    return this.committed.get(effectScope(useCaseId, operationId)) ?? "not_started";
+  private static key(toolId: string, operationId: string): string {
+    return `${toolId}::${operationId}`;
   }
 
-  /** The consequential tool that first bound this operation_id, if any. */
-  operationOwner(operationId: string): string | null {
-    return this.operationOwners.get(operationId) ?? null;
+  phaseOf(toolId: string, operationId: string): EffectPhase {
+    return this.committed.get(BoundarySession.key(toolId, operationId)) ?? "not_started";
   }
 
-  claimOperation(operationId: string, toolId: string): void {
-    if (!this.operationOwners.has(operationId)) {
-      this.operationOwners.set(operationId, toolId);
+  /** Confirmed effects this tool has produced in this session. */
+  effectsBy(toolId: string): number {
+    let total = 0;
+    for (const [key, phase] of this.committed) {
+      if (phase === "committed" && key.startsWith(`${toolId}::`)) total += 1;
     }
+    return total;
+  }
+
+  /**
+   * Binds an operation id to the first tool and intent that used it. A later call
+   * that reuses the id for anything else is refused rather than allowed to inherit
+   * another tool's committed record.
+   */
+  claimOperation(input: {
+    tool_id: string;
+    operation_id: string;
+    intent_fingerprint: string;
+  }): { ok: true } | { ok: false; reason: string; owner: { tool_id: string; intent_fingerprint: string } } {
+    const owner = this.operationOwners.get(input.operation_id);
+    if (!owner) {
+      this.operationOwners.set(input.operation_id, {
+        tool_id: input.tool_id,
+        intent_fingerprint: input.intent_fingerprint,
+      });
+      return { ok: true };
+    }
+    if (owner.tool_id !== input.tool_id) {
+      return { ok: false, reason: "operation_id_bound_to_other_tool", owner };
+    }
+    if (owner.intent_fingerprint !== input.intent_fingerprint) {
+      return { ok: false, reason: "operation_id_reused_for_different_intent", owner };
+    }
+    return { ok: true };
   }
 
   observationsFor(useCaseId: string): Map<string, ObservationMirror> {
@@ -122,12 +168,17 @@ export class BoundarySession {
     });
   }
 
-  recordCommit(useCaseId: string, operationId: string, revisionAfter: number): void {
-    const scope = effectScope(useCaseId, operationId);
-    if (this.committed.get(scope) === "committed") return;
-    this.committed.set(scope, "committed");
+  /**
+   * Records a commit the boundary has confirmed against authority. Safe to call
+   * again for the same tool and operation id; the mirror never double-counts.
+   */
+  recordCommit(toolId: string, operationId: string, revisionAfter: number): boolean {
+    const key = BoundarySession.key(toolId, operationId);
+    if (this.committed.get(key) === "committed") return false;
+    this.committed.set(key, "committed");
     this.effects += 1;
-    this.revision = revisionAfter;
+    if (Number.isInteger(revisionAfter) && revisionAfter > this.revision) this.revision = revisionAfter;
+    return true;
   }
 
   syncRevision(revision: number): void {
@@ -256,7 +307,10 @@ function refuse(input: {
   emit(input.protocol, "D2", "checkpoint_bound", {
     tool: input.toolId,
     checkpoint_id: checkpoint.checkpoint_id,
-    resumable: true,
+    postconditions_met: false,
+    // A refusal checkpoint records where the run stopped. Recovery has no policy
+    // for resuming from a blocked state, so it must not be advertised as resumable.
+    resumable: recoveryPolicySupports(checkpoint.order_state, COMMITTED_EFFECT_STATES),
   });
 
   return {
@@ -312,12 +366,17 @@ function validateShape(
     if (typeof value !== "string" || value.length === 0) {
       return { ok: false, detail: `missing_${key}` };
     }
-    if (spec.minLength !== undefined && value.length < spec.minLength) {
+    // JSON Schema counts characters, not UTF-16 code units, so an emoji is one.
+    if (spec.minLength !== undefined && Array.from(value).length < spec.minLength) {
       return { ok: false, detail: `${key}_below_min_length` };
     }
   }
-  if (contract.shape.unknown_field_policy === "reject") {
-    const allowed = new Set(contract.shape.required_args);
+
+  // The registered schema is what the caller was shown, so it is what binds.
+  // A read-only tool that declares no properties must still reject extra ones.
+  if (inputSchema.additionalProperties === false || contract.shape.unknown_field_policy === "reject") {
+    const declared = Object.keys(properties);
+    const allowed = new Set(declared.length > 0 ? declared : contract.shape.required_args);
     for (const key of Object.keys(args)) {
       if (!allowed.has(key)) return { ok: false, detail: `unknown_field_${key}` };
     }
@@ -329,17 +388,458 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
+/**
+ * Confirms a consequential response against authoritative state.
+ *
+ * A handler saying "committed" is a claim, not a fact. The boundary only counts
+ * an effect once an independent reconcile-by-operation-id agrees, so a handler
+ * that reports success without mutating anything cannot produce a committed
+ * effect count or a verified checkpoint.
+ */
+type Confirmation = {
+  confirmed: boolean;
+  reason: string;
+  authoritative_effect_count: number | null;
+  authoritative_revision: number | null;
+  authoritative_effect_id: string | null;
+  /** Authority's own record, used verbatim in the envelope a caller receives. */
+  authoritative_record: Record<string, unknown> | null;
+};
+
+function unconfirmed(reason: string, partial: Partial<Confirmation> = {}): Confirmation {
+  return {
+    confirmed: false,
+    reason,
+    authoritative_effect_count: partial.authoritative_effect_count ?? null,
+    authoritative_revision: partial.authoritative_revision ?? null,
+    authoritative_effect_id: partial.authoritative_effect_id ?? null,
+    authoritative_record: null,
+  };
+}
+
+/**
+ * What authority said about one operation id, after validation.
+ *
+ * There are exactly two answers authority is allowed to give, and both must be
+ * complete. Anything partial, self-contradictory, or merely implied is `unknown`,
+ * because a half-formed answer is indistinguishable from a wrong one.
+ */
+type AuthorityReading =
+  | {
+      kind: "committed";
+      record: Record<string, unknown>;
+      effect: Record<string, unknown>;
+      effect_id: string;
+      revision: number;
+      effect_count: number;
+    }
+  | { kind: "absent"; revision: number | null; effect_count: number }
+  | { kind: "unknown"; reason: string; revision: number | null; effect_count: number | null };
+
+function unknownReading(reason: string, revision: number | null = null, count: number | null = null): AuthorityReading {
+  return { kind: "unknown", reason, revision, effect_count: count };
+}
+
+function readAuthority(
+  verify: ((operationId: string) => unknown) | undefined,
+  operationId: string | undefined,
+): AuthorityReading {
+  if (!operationId) return unknownReading("no_operation_id");
+  if (!verify) return unknownReading("no_authority_available");
+
+  // A reconcile that throws is an authority we could not reach, not a rejection.
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = asRecord(verify(operationId));
+  } catch {
+    return unknownReading("authority_threw");
+  }
+
+  const data = asRecord(raw?.data);
+  if (!raw || raw.ok !== true || !data) return unknownReading("authority_unreachable");
+  return readAuthorityPayload(data, operationId);
+}
+
+/**
+ * The single interpreter of an authoritative answer. Both the inline verification
+ * a commit runs and the reconcile tool a caller invokes directly go through here,
+ * so an answer that would be rejected in one place cannot be believed in the other.
+ */
+function readAuthorityPayload(data: Record<string, unknown>, operationId: string): AuthorityReading {
+  if (data.authority !== "authoritative") return unknownReading("authority_unavailable");
+
+  const rawRevision = Number(data.revision);
+  const revision = Number.isInteger(rawRevision) ? rawRevision : null;
+  const rawCount = Number(data.effect_count);
+  const count = Number.isInteger(rawCount) ? rawCount : null;
+
+  const effect = asRecord(data.effect);
+  const record = asRecord(data.record);
+
+  if (data.resolution === "absent") {
+    // Absence must be unambiguous: an "absent" answer carrying a record is broken.
+    if (effect || record) return unknownReading("absent_answer_carries_record", revision, count);
+    if (count === null || count < 0) return unknownReading("absent_answer_without_count", revision, count);
+    return { kind: "absent", revision, effect_count: count };
+  }
+
+  if (data.resolution !== "committed") {
+    return unknownReading(`unrecognized_resolution:${String(data.resolution)}`, revision, count);
+  }
+
+  if (!effect || !record) return unknownReading("committed_answer_without_record", revision, count);
+  if (effect.status !== "committed") return unknownReading("committed_answer_not_committed", revision, count);
+  if (data.operation_id !== operationId || effect.operation_id !== operationId) {
+    return unknownReading("operation_id_mismatch", revision, count);
+  }
+  const effectId = String(data.effect_id ?? effect.id ?? "");
+  if (!effectId) return unknownReading("committed_answer_without_effect_id", revision, count);
+  if (revision === null) return unknownReading("committed_answer_without_revision", revision, count);
+  if (count === null || count < 1) return unknownReading("committed_answer_without_count", revision, count);
+
+  return { kind: "committed", record, effect, effect_id: effectId, revision, effect_count: count };
+}
+
+/**
+ * Whether an authoritative record is the kind of thing this use case produces,
+ * so one operation id cannot pass a commerce order off as a travel reservation.
+ */
+function recordMatchesUseCase(
+  record: Record<string, unknown>,
+  useCase: UseCase,
+  contract: SuiteToolContract,
+): { ok: true } | { ok: false; reason: string } {
+  const expected = useCase.effectRecord;
+  if (record.record_type !== expected.record_type) return { ok: false, reason: "record_type_mismatch" };
+  for (const [field, value] of Object.entries(expected)) {
+    if (field === "record_type") continue;
+    if (record[field] !== value) return { ok: false, reason: `record_field_mismatch:${field}` };
+  }
+  const envelopeFields = new Set(["operation_id", "effect_id", "revision"]);
+  for (const field of contract.postconditions) {
+    if (envelopeFields.has(field)) continue;
+    if (record[field] === undefined) return { ok: false, reason: `authoritative_postcondition_missing:${field}` };
+  }
+  return { ok: true };
+}
+
+function confirmEffect(input: {
+  verify: ((operationId: string) => unknown) | undefined;
+  operationId: string | undefined;
+  useCase: UseCase;
+  contract: SuiteToolContract;
+  /** The full provisional claim the handler made, envelope merged with record. */
+  claim: Record<string, unknown>;
+}): Confirmation {
+  if (!input.operationId) return unconfirmed("no_operation_id");
+  if (!input.verify) return unconfirmed("no_authority_available");
+
+  // The claim must at least be about the operation the caller asked for, and must
+  // carry a revision of the declared type rather than something merely truthy.
+  if (input.claim.operation_id !== undefined && input.claim.operation_id !== input.operationId) {
+    return unconfirmed("claimed_operation_id_mismatch");
+  }
+  if (input.claim.revision !== undefined && !Number.isInteger(input.claim.revision)) {
+    return unconfirmed("claimed_revision_not_integer");
+  }
+
+  const reading = readAuthority(input.verify, input.operationId);
+  if (reading.kind !== "committed") {
+    return unconfirmed(
+      reading.kind === "absent" ? "authority_says_absent" : reading.reason,
+      { authoritative_effect_count: reading.effect_count, authoritative_revision: reading.revision },
+    );
+  }
+
+  const carry = {
+    authoritative_effect_count: reading.effect_count,
+    authoritative_revision: reading.revision,
+    authoritative_effect_id: reading.effect_id,
+  };
+
+  const claimedEffectId = input.claim.effect_id;
+  if (claimedEffectId !== undefined && reading.effect_id !== String(claimedEffectId)) {
+    return unconfirmed("effect_id_mismatch", carry);
+  }
+
+  const semantics = recordMatchesUseCase(reading.record, input.useCase, input.contract);
+  if (!semantics.ok) return unconfirmed(semantics.reason, carry);
+
+  // Where the claim states a domain field, authority must state the same value.
+  const envelopeFields = new Set(["operation_id", "effect_id", "revision"]);
+  for (const field of input.contract.postconditions) {
+    if (envelopeFields.has(field)) continue;
+    if (input.claim[field] !== undefined && reading.record[field] !== input.claim[field]) {
+      return unconfirmed(`postcondition_disagreement:${field}`, carry);
+    }
+  }
+
+  const claimedCount = Number(input.claim.effect_count);
+  if (Number.isInteger(claimedCount) && claimedCount !== reading.effect_count) {
+    return unconfirmed("effect_count_disagreement", carry);
+  }
+
+  const claimedRevision = Number(input.claim.revision);
+  if (Number.isInteger(claimedRevision) && claimedRevision !== reading.revision) {
+    return unconfirmed("revision_disagreement", carry);
+  }
+
+  return {
+    confirmed: true,
+    reason: "authoritative_match",
+    authoritative_effect_count: reading.effect_count,
+    authoritative_revision: reading.revision,
+    authoritative_effect_id: reading.effect_id,
+    authoritative_record: reading.record,
+  };
+}
+
+type AuthorityProbe = {
+  resolution: "committed" | "absent" | "unknown";
+  effect_count: number | null;
+  revision: number | null;
+  effect_id: string | null;
+};
+
+/**
+ * Asks authority what happened to one operation id after a call failed.
+ *
+ * Uses the same strict reading as a success path, so the two cannot drift: an
+ * incomplete answer is unknown in both, and a committed answer must describe a
+ * record this use case could actually have produced.
+ */
+function probeAuthority(
+  verify: ((operationId: string) => unknown) | undefined,
+  operationId: string | undefined,
+  useCase: UseCase,
+  contract: SuiteToolContract,
+): AuthorityProbe {
+  const reading = readAuthority(verify, operationId);
+
+  switch (reading.kind) {
+    case "committed": {
+      const semantics = recordMatchesUseCase(reading.record, useCase, contract);
+      if (!semantics.ok) {
+        return { resolution: "unknown", effect_count: null, revision: null, effect_id: null };
+      }
+      return {
+        resolution: "committed",
+        effect_count: reading.effect_count,
+        revision: reading.revision,
+        effect_id: reading.effect_id,
+      };
+    }
+    case "absent":
+      return { resolution: "absent", effect_count: reading.effect_count, revision: reading.revision, effect_id: null };
+    case "unknown":
+      return { resolution: "unknown", effect_count: reading.effect_count, revision: reading.revision, effect_id: null };
+    default: {
+      const _exhaustive: never = reading;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * C1 + C2 + D2 for a consequential call that failed after dispatch.
+ *
+ * Three honest outcomes: authority found the effect (it committed despite the
+ * error), authority proved there is none (safe to observe and try again), or
+ * authority could not say (ambiguous — reconcile, never retry).
+ */
+function resolveFailedAct(input: {
+  protocol: ProtocolRunContext;
+  session: BoundarySession;
+  useCase: UseCase;
+  contract: SuiteToolContract;
+  toolId: string;
+  operationId: string | undefined;
+  verify: ((operationId: string) => unknown) | undefined;
+  handlerError: string;
+  normalized: NormalizedOutcome;
+  mechanisms: Mechanism[];
+}): BoundaryEnvelope {
+  const probe = probeAuthority(input.verify, input.operationId, input.useCase, input.contract);
+  emit(input.protocol, "D1", "failed_act_resolved", {
+    tool: input.toolId,
+    operation_id: input.operationId ?? null,
+    handler_error: input.handlerError,
+    resolution: probe.resolution,
+    authoritative_effect_count: probe.effect_count,
+  });
+
+  if (probe.resolution === "committed" && input.operationId) {
+    // The call reported failure but the effect is real. Recording it is the only
+    // way the run stops believing it still has work to do.
+    input.session.recordCommit(input.toolId, input.operationId, probe.revision ?? input.session.currentRevision());
+    const structured_failure = buildStructuredFailure({
+      category: "ambiguous_effect",
+      tool: input.toolId,
+      expected: "matching_response_and_effect",
+      actual: `error_reported_but_effect_committed:${input.handlerError}`,
+      owner: "reliability_boundary",
+      recoverability: "manager",
+      state_revision: input.session.currentRevision(),
+      operation_id: input.operationId,
+      evidence: ["failed_act_resolved", "authoritative_commit"],
+    });
+    const refusal = refuse({
+      protocol: input.protocol,
+      session: input.session,
+      toolId: input.toolId,
+      useCase: input.useCase,
+      error: "effect_committed_despite_error",
+      structured_failure,
+      allowed_next_action: "stop",
+      next_tool: null,
+      operationId: input.operationId,
+      mechanisms: [...input.mechanisms, "C1", "C2", "D2"],
+    });
+    return {
+      ...refusal,
+      commit_status: "committed",
+      authority: "authoritative",
+      authoritative_effect_count: probe.effect_count,
+    };
+  }
+
+  if (probe.resolution === "absent") {
+    // Authority proved no effect exists, so the ordinary recovery route is open.
+    const stale = input.handlerError === "stale_revision";
+    return {
+      ...refuse({
+        protocol: input.protocol,
+        session: input.session,
+        toolId: input.toolId,
+        useCase: input.useCase,
+        error: input.handlerError,
+        structured_failure:
+          input.normalized.structured_failure ??
+          buildStructuredFailure({
+            category: stale ? "stale_capability_or_state" : "execution_failure",
+            tool: input.toolId,
+            expected: "ok",
+            actual: input.handlerError,
+            owner: "reliability_boundary",
+            recoverability: "automatic",
+            state_revision: input.session.currentRevision(),
+            operation_id: input.operationId,
+          }),
+        allowed_next_action: stale ? "reobserve" : "observe",
+        next_tool: producerOf(input.useCase.id, input.contract.required_states[0] ?? ""),
+        operationId: input.operationId,
+        mechanisms: [...input.mechanisms, "C1", "C2", "D2"],
+      }),
+      commit_status: "rejected",
+      authority: "authoritative",
+      authoritative_effect_count: probe.effect_count,
+    };
+  }
+
+  const structured_failure = buildStructuredFailure({
+    category: "ambiguous_effect",
+    tool: input.toolId,
+    expected: "authoritative_answer_about_operation",
+    actual: `unresolved_after:${input.handlerError}`,
+    owner: "reliability_boundary",
+    recoverability: "manager",
+    state_revision: input.session.currentRevision(),
+    operation_id: input.operationId,
+    evidence: ["failed_act_resolved", "authority_unreachable"],
+  });
+  return {
+    ...refuse({
+      protocol: input.protocol,
+      session: input.session,
+      toolId: input.toolId,
+      useCase: input.useCase,
+      error: "ambiguous_effect",
+      structured_failure,
+      allowed_next_action: "reconcile",
+      next_tool: reconcilerFor(input.useCase),
+      operationId: input.operationId,
+      mechanisms: [...input.mechanisms, "C1", "C2", "D2"],
+    }),
+    commit_status: "possible",
+    authority: "unavailable",
+  };
+}
+
+/**
+ * The refusal a caller receives when the protocol decision gate blocks dispatch.
+ * Same envelope shape as every other refusal, including the single legal next move.
+ */
+export function describeDecisionBlock(input: {
+  useCase: UseCase;
+  tool: LabTool;
+  session: BoundarySession;
+  protocol: ProtocolRunContext;
+  code: string;
+  action: string;
+}): BoundaryEnvelope {
+  const toolId = `${input.useCase.id}.${input.tool.name}`;
+  const allowed_next_action: NextAction =
+    input.code === "decision_requires_reobserve"
+      ? "reobserve"
+      : input.action === "escalate" || input.action === "stop"
+        ? "stop"
+        : "reconcile";
+  // Naming an action without naming a tool that performs it is not a next action,
+  // it is a dead end. "Reobserve" means re-run the observation this tool depends on.
+  const nextTool =
+    allowed_next_action === "stop"
+      ? null
+      : allowed_next_action === "reobserve"
+        ? (observationToolFor(input.useCase, input.tool) ?? reconcilerFor(input.useCase))
+        : reconcilerFor(input.useCase);
+
+  const structured_failure = buildStructuredFailure({
+    category: "ambiguous_effect",
+    tool: toolId,
+    expected: "resolved_prior_effect",
+    actual: input.code,
+    owner: "reliability_boundary",
+    recoverability: allowed_next_action === "stop" ? "manager" : "automatic",
+    state_revision: input.session.currentRevision(),
+    operation_id: input.protocol.identities.operation_id ?? undefined,
+    evidence: ["decision_gate", input.code, input.action],
+  });
+
+  emit(input.protocol, "C2", "decision_block_reported", {
+    tool: toolId,
+    code: input.code,
+    action: input.action,
+    single_legal_next_action: nextTool,
+  });
+
+  return {
+    ok: false,
+    error: input.code,
+    category: structured_failure.category,
+    data: { decision_action: input.action, tool: toolId },
+    allowed_next_action,
+    next_tool: nextTool,
+    effect_count: input.session.effectCount(),
+    commit_status: "rejected",
+    structured_failure,
+    mechanisms: ["C2"],
+    simulated: true,
+  };
+}
+
 export function createEnforcedHandler(input: {
   useCase: UseCase;
   tool: LabTool;
   session: BoundarySession;
   protocol: ProtocolRunContext;
   handler: (args: Record<string, unknown>) => unknown;
+  /** Reads authoritative state for one operation id. Omitted for reconcile tools. */
+  verify?: (operationId: string) => unknown;
 }): (args: Record<string, unknown>) => BoundaryEnvelope {
-  const { useCase, tool, session, protocol, handler } = input;
+  const { useCase, tool, session, protocol, handler, verify } = input;
   const toolId = `${useCase.id}.${tool.name}`;
 
-  return (rawArgs: Record<string, unknown>): BoundaryEnvelope => {
+  const enforced = (rawArgs: Record<string, unknown>): BoundaryEnvelope => {
     const args = rawArgs ?? {};
     const contract = getSuiteToolContract(toolId);
     const mechanisms: Mechanism[] = [];
@@ -397,7 +897,9 @@ export function createEnforcedHandler(input: {
         error: "contract_violation",
         structured_failure,
         allowed_next_action: contract.role === "reconcile" ? "reconcile" : "stop",
-        next_tool: null,
+        // Malformed arguments are the caller's to correct, so the tool that can
+        // still make progress is this one, called properly.
+        next_tool: contract.role === "reconcile" ? toolId : null,
         mechanisms: [...mechanisms, "C1", "C2", "D2"],
       });
     }
@@ -408,73 +910,72 @@ export function createEnforcedHandler(input: {
     if (operationId) {
       protocol.setOperationId(operationId);
       mechanisms.push("D1");
+      // Intent is what the caller asked for, so the fingerprint is taken from the
+      // declared arguments. Folding in the session's ambient revision would make a
+      // byte-identical retry look like a new intent, which is the opposite of what
+      // an idempotency key is for.
       const fingerprint = intentFingerprint({
         tool: toolId,
         args,
-        state_revision: session.currentRevision(),
+        state_revision: Number.isInteger(args.expected_revision)
+          ? (args.expected_revision as number)
+          : session.currentRevision(),
         contract_version: contract.contract_version,
       });
-      const conflict = session.journal.conflictOnReuse({
+      const ownership = session.claimOperation({
+        tool_id: toolId,
         operation_id: operationId,
         intent_fingerprint: fingerprint,
       });
-      const owner = session.operationOwner(operationId);
       session.journal.append({
         at_ms: Date.now(),
         operation_id: operationId,
         intent_fingerprint: fingerprint,
         tool: toolId,
-        phase: session.phaseOf(useCase.id, operationId),
-        note: conflict ? "intent_changed_under_same_operation_id" : "intent_recorded",
+        phase: session.phaseOf(toolId, operationId),
+        note: ownership.ok ? "intent_recorded" : ownership.reason,
       });
       emit(protocol, "D1", "effect_identity_bound", {
         tool: toolId,
         operation_id: operationId,
         intent_fingerprint: fingerprint,
-        prior_phase: session.phaseOf(useCase.id, operationId),
-        intent_conflict: conflict,
-        operation_owner: owner,
+        prior_phase: session.phaseOf(toolId, operationId),
+        identity_conflict: ownership.ok ? null : ownership.reason,
       });
 
-      // One operation_id names one effect. A consequential call that reuses an
-      // operation_id already bound to a different consequential tool is an
-      // identity conflict, and must fail closed rather than inherit that tool's
-      // duplicate-suppression or committed phase.
-      if (contract.role === "act") {
-        if (owner && owner !== toolId) {
-          const structured_failure = buildStructuredFailure({
-            category: "invalid_input_or_precondition",
-            tool: toolId,
-            expected: `operation_id_unbound_or_owned_by:${toolId}`,
-            actual: `operation_id_owned_by:${owner}`,
-            owner: "reliability_boundary",
-            recoverability: "non_recoverable",
-            state_revision: session.currentRevision(),
-            operation_id: operationId,
-            evidence: ["effect_identity_bound", owner],
-          });
-          return refuse({
-            protocol,
-            session,
-            toolId,
-            useCase,
-            error: "operation_id_scope_conflict",
-            structured_failure,
-            allowed_next_action: "stop",
-            next_tool: null,
-            operationId,
-            mechanisms: [...mechanisms, "C1", "C2", "D2"],
-          });
-        }
-        session.claimOperation(operationId, toolId);
+      // An operation id that already means something else is refused outright.
+      // Inheriting another tool's record would let one commit certify a second.
+      if (!ownership.ok && contract.role === "act") {
+        const structured_failure = buildStructuredFailure({
+          category: "invalid_input_or_precondition",
+          tool: toolId,
+          expected: "unused_operation_id_for_this_intent",
+          actual: ownership.reason,
+          owner: "reliability_boundary",
+          recoverability: "manager",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["effect_identity_bound", ownership.reason, ownership.owner.tool_id],
+        });
+        return refuse({
+          protocol,
+          session,
+          toolId,
+          useCase,
+          error: "operation_id_conflict",
+          structured_failure,
+          allowed_next_action: "stop",
+          next_tool: null,
+          operationId,
+          mechanisms: [...mechanisms, "C1", "C2", "D2"],
+        });
+      }
 
-        // An existing committed record is reconciled before any staleness rejection.
-        if (session.phaseOf(useCase.id, operationId) === "committed") {
-          emit(protocol, "D1", "duplicate_suppressed_by_operation_id", {
-            tool: toolId,
-            operation_id: operationId,
-          });
-        }
+      if (contract.role === "act" && session.phaseOf(toolId, operationId) === "committed") {
+        emit(protocol, "D1", "duplicate_suppressed_by_operation_id", {
+          tool: toolId,
+          operation_id: operationId,
+        });
       }
     }
 
@@ -492,9 +993,7 @@ export function createEnforcedHandler(input: {
         freshness_dependencies: contract.freshness_dependencies,
       });
 
-      const alreadyCommitted = operationId
-        ? session.phaseOf(useCase.id, operationId) === "committed"
-        : false;
+      const alreadyCommitted = operationId ? session.phaseOf(toolId, operationId) === "committed" : false;
       const blocking = [...verdict.never_observed, ...verdict.stale];
       if (blocking.length > 0 && !alreadyCommitted) {
         const stale = verdict.stale.length > 0;
@@ -522,6 +1021,44 @@ export function createEnforcedHandler(input: {
           next_tool: producerOf(useCase.id, blocking[0]!),
           missing_evidence: verdict.never_observed,
           stale_evidence: verdict.stale,
+          operationId,
+          mechanisms: [...mechanisms, "C1", "C2", "D2"],
+        });
+      }
+
+      // Evidence is current, so this is the last thing standing between the caller
+      // and a second effect. The budget is declared per tool, which is why the run
+      // can say "the task is finished" rather than "observe again".
+      if (
+        contract.effect_budget !== null &&
+        session.effectsBy(toolId) >= contract.effect_budget &&
+        (!operationId || session.phaseOf(toolId, operationId) !== "committed")
+      ) {
+        emit(protocol, "D1", "effect_budget_exhausted", {
+          tool: toolId,
+          effect_budget: contract.effect_budget,
+          confirmed_effects: session.effectsBy(toolId),
+        });
+        const structured_failure = buildStructuredFailure({
+          category: "invalid_input_or_precondition",
+          tool: toolId,
+          expected: `at_most_${contract.effect_budget}_effects`,
+          actual: `already_committed_${session.effectsBy(toolId)}`,
+          owner: "reliability_boundary",
+          recoverability: "manager",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["effect_budget_exhausted", toolId],
+        });
+        return refuse({
+          protocol,
+          session,
+          toolId,
+          useCase,
+          error: "effect_budget_exhausted",
+          structured_failure,
+          allowed_next_action: "stop",
+          next_tool: null,
           operationId,
           mechanisms: [...mechanisms, "C1", "C2", "D2"],
         });
@@ -567,6 +1104,43 @@ export function createEnforcedHandler(input: {
         operationId,
         mechanisms: [...mechanisms, "C1", "C2", "D2"],
       });
+    }
+
+    // A pending promise is not a result. This boundary answers synchronously, so
+    // it cannot see how the operation ends — and an operation still in flight may
+    // yet commit. Reporting "no effect" here would be a guess stated as a fact.
+    if (isThenable(raw)) {
+      const structured_failure = buildStructuredFailure({
+        category: "ambiguous_effect",
+        tool: toolId,
+        expected: "settled_result",
+        actual: "pending_promise",
+        owner: "website",
+        recoverability: "manager",
+        state_revision: session.currentRevision(),
+        operation_id: operationId,
+        evidence: ["async_handler_unresolved"],
+      });
+      emit(protocol, "C1", "async_result_unverifiable", {
+        tool: toolId,
+        operation_id: operationId ?? null,
+      });
+      return {
+        ...refuse({
+          protocol,
+          session,
+          toolId,
+          useCase,
+          error: "unverifiable_async_effect",
+          structured_failure,
+          allowed_next_action: contract.role === "act" ? "reconcile" : "stop",
+          next_tool: contract.role === "act" ? reconcilerFor(useCase) : null,
+          operationId,
+          mechanisms: [...mechanisms, "C1", "C2", "D2"],
+        }),
+        commit_status: "possible",
+        authority: "unavailable",
+      };
     }
 
     const record = asRecord(raw);
@@ -620,8 +1194,23 @@ export function createEnforcedHandler(input: {
     }
 
     if (!handlerOk) {
-      const nextAction: NextAction =
-        String(record?.error) === "stale_revision" ? "reobserve" : contract.role === "act" ? "observe" : "stop";
+      // A consequential call that was dispatched and came back unhappy has not
+      // proved anything about the world. Only authority can say whether the effect
+      // exists, so the failure is resolved against authority before it is reported.
+      if (contract.role === "act") {
+        return resolveFailedAct({
+          protocol,
+          session,
+          useCase,
+          contract,
+          toolId,
+          operationId,
+          verify,
+          handlerError: String(record?.error ?? "execution_failure"),
+          normalized,
+          mechanisms,
+        });
+      }
       return refuse({
         protocol,
         session,
@@ -637,8 +1226,8 @@ export function createEnforcedHandler(input: {
             actual: String(record?.error ?? "unknown"),
             state_revision: session.currentRevision(),
           }),
-        allowed_next_action: nextAction,
-        next_tool: nextAction === "observe" ? producerOf(useCase.id, contract.required_states[0] ?? "") : null,
+        allowed_next_action: "stop",
+        next_tool: null,
         operationId,
         mechanisms: [...mechanisms, "C2", "D2"],
       });
@@ -658,61 +1247,169 @@ export function createEnforcedHandler(input: {
 
     if (contract.role === "reconcile") {
       mechanisms.push("D1");
+      // The same reading the boundary applies to its own inline verification. An
+      // answer it would refuse to act on must not be handed to the caller as one
+      // they can act on.
+      const reading = operationId
+        ? readAuthorityPayload(data, operationId)
+        : unknownReading("no_operation_id");
+      const actToolId = actToolIdFor(useCase);
+
+      if (reading.kind === "unknown") {
+        const structured_failure = buildStructuredFailure({
+          category: "ambiguous_effect",
+          tool: toolId,
+          expected: "readable_authoritative_answer",
+          actual: reading.reason,
+          owner: "website",
+          recoverability: "manager",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["effect_reconciled", reading.reason],
+        });
+        emit(protocol, "D1", "reconcile_unreadable", {
+          tool: toolId,
+          operation_id: operationId ?? null,
+          reason: reading.reason,
+        });
+        // The obligation to verify is not discharged, so the gate stays closed.
+        return {
+          ...refuse({
+            protocol,
+            session,
+            toolId,
+            useCase,
+            error: "unreadable_authority",
+            structured_failure,
+            allowed_next_action: "stop",
+            next_tool: null,
+            operationId,
+            mechanisms: [...mechanisms, "C1", "C2", "D2"],
+          }),
+          commit_status: "possible",
+          authority: "unavailable",
+        };
+      }
+
+      // Reconciliation is how an unmirrored commit becomes known. If authority
+      // holds a committed record we never counted, adopt it now rather than keep
+      // reporting a lower count than the world actually contains.
+      if (
+        operationId &&
+        actToolId &&
+        reading.kind === "committed" &&
+        session.phaseOf(actToolId, operationId) !== "committed"
+      ) {
+        session.recordCommit(actToolId, operationId, reading.revision);
+        emit(protocol, "D1", "discovered_commit_adopted", {
+          tool: toolId,
+          operation_id: operationId,
+          adopted_for: actToolId,
+          effect_count: session.effectCount(),
+        });
+      }
       emit(protocol, "D1", "effect_reconciled", {
         tool: toolId,
         operation_id: operationId ?? null,
-        authority: data.authority ?? "unavailable",
-        effect_count: data.effect_count ?? session.effectCount(),
+        authority: "authoritative",
+        resolution: reading.kind,
+        effect_count: reading.effect_count,
       });
+      // A readable authoritative answer, and only that, discharges the obligation.
       protocol.noteSuccessfulReconcile();
     }
 
     let checkpointId: string | undefined;
+    /** Set for a confirmed commit, so the caller reads authority and not the claim. */
+    let verifiedData: Record<string, unknown> | null = null;
+    let confirmedCount: number | null = null;
     if (contract.role === "act") {
-      // A handler may report that it suppressed a duplicate rather than
-      // committing. The boundary honours that only when its own scoped ledger
-      // already records the commit; otherwise the handler is asserting an effect
-      // the boundary never saw land, and the agent must reconcile instead of
-      // being told the work is done.
-      const claimsDuplicate = Boolean(data.duplicate_prevented);
-      const ledgerCommitted = operationId
-        ? session.phaseOf(useCase.id, operationId) === "committed"
-        : false;
-      if (claimsDuplicate && !ledgerCommitted) {
+      const duplicate = Boolean(data.duplicate_prevented);
+
+      // The handler's success is provisional until authority agrees on the whole
+      // tuple: identity, committed status, record semantics, revision and count.
+      const confirmation = confirmEffect({
+        verify,
+        operationId,
+        useCase,
+        contract,
+        claim: visible,
+      });
+      emit(protocol, "D1", "effect_confirmation", {
+        tool: toolId,
+        operation_id: operationId ?? null,
+        confirmed: confirmation.confirmed,
+        reason: confirmation.reason,
+        claimed_effect_count: data.effect_count ?? null,
+        authoritative_effect_count: confirmation.authoritative_effect_count,
+        authoritative_revision: confirmation.authoritative_revision,
+      });
+
+      if (!confirmation.confirmed) {
         const structured_failure = buildStructuredFailure({
-          category: "execution_failure",
+          category: "ambiguous_effect",
           tool: toolId,
-          expected: "committed_effect_in_boundary_ledger",
-          actual: "duplicate_prevented_without_prior_commit",
+          expected: "authoritative_record_for_operation_id",
+          actual: confirmation.reason,
           owner: "reliability_boundary",
-          recoverability: "automatic",
+          recoverability: "manager",
           state_revision: session.currentRevision(),
           operation_id: operationId,
-          evidence: ["duplicate_prevented", "boundary_ledger_miss"],
+          evidence: ["effect_confirmation", confirmation.reason],
         });
-        return refuse({
+        const refusal = refuse({
           protocol,
           session,
           toolId,
           useCase,
-          error: "unverified_duplicate_claim",
+          error: "unverified_effect",
           structured_failure,
           allowed_next_action: "reconcile",
           next_tool: reconcilerFor(useCase),
           operationId,
           mechanisms: [...mechanisms, "C2", "D2"],
         });
+        return {
+          ...refusal,
+          commit_status: "possible",
+          authority: "unavailable",
+          authoritative_effect_count: confirmation.authoritative_effect_count,
+          boundary_claimed_effect_count: session.effectCount(),
+        };
       }
 
-      const duplicate = claimsDuplicate;
-      if (!duplicate && operationId) {
-        session.recordCommit(
-          useCase.id,
+      // What the caller is told about a commit is authority's account of it. The
+      // handler's own payload is never forwarded, so a handler cannot describe an
+      // effect differently from the record that was actually verified.
+      confirmedCount = confirmation.authoritative_effect_count;
+      verifiedData = {
+        operation_id: operationId,
+        effect_id: confirmation.authoritative_effect_id,
+        revision: confirmation.authoritative_revision,
+        effect_count: confirmation.authoritative_effect_count,
+        record: confirmation.authoritative_record,
+        ...(confirmation.authoritative_record ?? {}),
+        duplicate_prevented: duplicate,
+        simulated: true,
+      };
+
+      // Adoption is driven by authority, not by whether the handler called this a
+      // duplicate: reconciliation may have just revealed a commit we never mirrored.
+      if (operationId) {
+        const adopted = session.recordCommit(
+          toolId,
           operationId,
-          Number(data.revision ?? session.currentRevision() + 1),
+          confirmation.authoritative_revision ?? Number(data.revision ?? session.currentRevision() + 1),
         );
+        if (adopted && duplicate) {
+          emit(protocol, "D1", "discovered_commit_adopted", {
+            tool: toolId,
+            operation_id: operationId,
+            authoritative_effect_count: confirmation.authoritative_effect_count,
+          });
+        }
       }
-      session.syncRevision(Number(data.revision ?? session.currentRevision()));
+      session.syncRevision(confirmation.authoritative_revision ?? Number(data.revision ?? session.currentRevision()));
       if (operationId) {
         session.journal.append({
           at_ms: Date.now(),
@@ -738,7 +1435,7 @@ export function createEnforcedHandler(input: {
       const checkpoint = createVerifiedCheckpoint({
         protocol,
         order_state: useCase.committedState,
-        order_id: String(data.effect_id ?? data.id ?? ""),
+        order_id: confirmation.authoritative_effect_id ?? "",
         receipt_id: operationId ?? null,
         state_revision: session.currentRevision(),
         operation_journal_refs: operationId ? [operationId] : [],
@@ -752,7 +1449,8 @@ export function createEnforcedHandler(input: {
         tool: toolId,
         checkpoint_id: checkpoint.checkpoint_id,
         order_state: useCase.committedState,
-        resumable: true,
+        // Only claimed when the recovery policy can actually decide from this state.
+        resumable: recoveryPolicySupports(useCase.committedState, COMMITTED_EFFECT_STATES),
       });
 
       // A committed effect must be verified before any further consequential call.
@@ -772,10 +1470,25 @@ export function createEnforcedHandler(input: {
       protocol.noteSuccessfulObserve();
     }
 
+    // Both a commit and a reconcile know what authority counted. Reporting the
+    // mirror's number instead would contradict the world the caller is acting in.
+    const authoritativeCount =
+      confirmedCount ??
+      (contract.role === "reconcile" && Number.isInteger(Number(data.effect_count))
+        ? Number(data.effect_count)
+        : null);
+
     return {
       ok: true,
-      data: { ...data, contract_version: contract.contract_version },
-      effect_count: session.effectCount(),
+      data: { ...(verifiedData ?? data), contract_version: contract.contract_version },
+      effect_count: authoritativeCount ?? session.effectCount(),
+      authoritative_effect_count: authoritativeCount,
+      boundary_claimed_effect_count:
+        authoritativeCount !== null && authoritativeCount !== session.effectCount()
+          ? session.effectCount()
+          : undefined,
+      commit_status: contract.role === "act" ? "committed" : undefined,
+      authority: contract.role === "reconcile" ? (data.authority as BoundaryEnvelope["authority"]) : undefined,
       allowed_next_action: contract.role === "act" ? "reconcile" : undefined,
       next_tool: contract.role === "act" ? reconcilerFor(useCase) : null,
       mechanisms,
@@ -783,9 +1496,118 @@ export function createEnforcedHandler(input: {
       simulated: true,
     };
   };
+
+  return enforced;
+}
+
+/**
+ * The outermost layer of a registered tool. Everything a caller can reach is
+ * inside it, so this is the only place that can promise two things absolutely:
+ * one call runs at a time, and nothing leaves except an envelope.
+ */
+export function guardRegisteredTool(input: {
+  useCase: UseCase;
+  tool: LabTool;
+  session: BoundarySession;
+  execute: (args: Record<string, unknown>) => unknown;
+}): (args: Record<string, unknown>) => BoundaryEnvelope {
+  const { useCase, tool, session, execute } = input;
+  const toolId = `${useCase.id}.${tool.name}`;
+
+  return (rawArgs: Record<string, unknown>): BoundaryEnvelope => {
+    // A tool that calls back into the boundary while its own call is still open
+    // would interleave two runs through one state machine. Refusing the inner
+    // call keeps the outer one's account of what happened intact.
+    if (session.isDispatching()) {
+      return {
+        ok: false,
+        error: "reentrant_call_refused",
+        category: "invalid_input_or_precondition",
+        data: { tool: toolId, in_flight: session.dispatchingTool() },
+        allowed_next_action: "stop",
+        next_tool: null,
+        effect_count: session.effectCount(),
+        commit_status: "rejected",
+        structured_failure: buildStructuredFailure({
+          category: "invalid_input_or_precondition",
+          tool: toolId,
+          expected: "no_call_in_flight",
+          actual: `reentrant_during:${session.dispatchingTool() ?? "unknown"}`,
+          owner: "website",
+          recoverability: "manager",
+          state_revision: session.currentRevision(),
+        }),
+        mechanisms: ["A"],
+        simulated: true,
+      };
+    }
+
+    session.beginDispatch(toolId);
+    try {
+      return execute(rawArgs) as BoundaryEnvelope;
+    } catch (error) {
+      // Nothing may leave this boundary except an envelope. An exception here is a
+      // boundary defect, and the caller still needs a truthful account: the effect
+      // is unknown, so the only safe instruction is to reconcile or stop.
+      const operationId = typeof rawArgs?.operation_id === "string" ? rawArgs.operation_id : undefined;
+      const isAct = tool.role === "act";
+      return {
+        ok: false,
+        error: "boundary_failure",
+        category: "ambiguous_effect",
+        data: { tool: toolId, detail: String(error) },
+        allowed_next_action: isAct ? "reconcile" : "stop",
+        next_tool: isAct ? reconcilerFor(useCase) : null,
+        effect_count: session.effectCount(),
+        commit_status: "possible",
+        authority: "unavailable",
+        structured_failure: buildStructuredFailure({
+          category: "ambiguous_effect",
+          tool: toolId,
+          expected: "envelope",
+          actual: `boundary_threw:${String(error)}`,
+          owner: "reliability_boundary",
+          recoverability: "manager",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["boundary_failure"],
+        }),
+        mechanisms: ["C1", "C2"],
+        simulated: true,
+      };
+    } finally {
+      session.endDispatch();
+    }
+  };
+}
+
+function isThenable(value: unknown): boolean {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/**
+ * The tool whose evidence a blocked tool depends on. Used when a refusal asks the
+ * caller to observe again: the answer has to be a tool it can actually call.
+ */
+function observationToolFor(useCase: UseCase, tool: LabTool): string | null {
+  for (const evidence of tool.requiresEvidence ?? []) {
+    const producer = producerOf(useCase.id, evidence);
+    if (producer) return producer;
+  }
+  const observer = useCase.tools.find((item) => item.role === "discover" || item.role === "inspect");
+  return observer ? `${useCase.id}.${observer.name}` : null;
 }
 
 function reconcilerFor(useCase: UseCase): string | null {
   const tool = useCase.tools.find((item) => item.role === "reconcile");
+  return tool ? `${useCase.id}.${tool.name}` : null;
+}
+
+function actToolIdFor(useCase: UseCase): string | null {
+  const tool = useCase.tools.find((item) => item.role === "act");
   return tool ? `${useCase.id}.${tool.name}` : null;
 }

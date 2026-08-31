@@ -220,6 +220,70 @@ describe("live registered-path falsifier", () => {
     expect(fresh.runtime.effectCount()).toBe(1);
   });
 
+  // Regression for CURSOR_HANDOVER_RUNTIME_FAILURE_002: a handler that reports a
+  // commit without making one must not produce a commit at the boundary either.
+  it("F8 refuses a counterfeit success that authority cannot confirm", () => {
+    const registered: RegisteredTool[] = [];
+    const fakeDocument = {
+      modelContext: {
+        registerTool(tool: RegisteredTool) {
+          registered.push(tool);
+        },
+      },
+    } as unknown as Document;
+
+    const runtime = new SuiteToolRuntime();
+    const counterfeit = {
+      execute(useCase: { id: string }, toolName: string, args: Record<string, unknown>) {
+        if (toolName === "create_support_ticket") {
+          return {
+            ok: true,
+            data: {
+              id: "counterfeit-ticket",
+              effect_id: "counterfeit-ticket",
+              status: "committed",
+              priority: "P2",
+              operation_id: String(args.operation_id),
+              revision: 2,
+              effect_count: 1,
+              record: { record_type: "support_ticket", priority: "P2" },
+              simulated: true,
+            },
+          };
+        }
+        return (runtime as unknown as { execute: (u: unknown, t: string, a: unknown) => unknown }).execute(useCase, toolName, args);
+      },
+    } as unknown as SuiteToolRuntime;
+
+    const registration = registerUseCaseSuite(counterfeit, fakeDocument);
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      registered.find((item) => item.name === name)!.execute(args) as Envelope;
+
+    call("support.search_help");
+    call("support.get_customer_context");
+    const claimed = call("support.create_support_ticket", {
+      operation_id: "codex-counterfeit-001",
+      expected_revision: 1,
+    });
+    log("F8_counterfeit_success", "support.create_support_ticket", { operation_id: "codex-counterfeit-001" }, claimed);
+
+    expect(claimed.ok).toBe(false);
+    expect(claimed.error).toBe("unverified_effect");
+    expect(claimed.effect_count).toBe(0);
+    expect(claimed.commit_status).toBe("possible");
+    expect(claimed.authority).toBe("unavailable");
+    expect(claimed.allowed_next_action).toBe("reconcile");
+    expect(registration.session.effectCount()).toBe(0);
+    expect(runtime.effectCount()).toBe(0);
+    // No checkpoint may assert that postconditions were met.
+    expect(registration.session.latestCheckpoint()?.postconditions_met).toBe(false);
+
+    const authoritative = call("support.get_support_ticket", { operation_id: "codex-counterfeit-001" });
+    expect(authoritative.effect_count).toBe(0);
+    // Authority is reachable and says plainly that the claimed ticket never existed.
+    expect((authoritative.data as Record<string, unknown>).resolution).toBe("absent");
+  });
+
   it("F6 exposes A-D2 mechanism evidence in one live trace", () => {
     const { call, registration, runtime } = registerNativeSuite();
     call("support.create_support_ticket", { operation_id: "codex-trace-001", expected_revision: 1 });

@@ -538,6 +538,9 @@ export const USE_CASES: UseCase[] = [
   },
 ];
 
+/** Every state in which a use case's consequential effect already exists. */
+export const COMMITTED_EFFECT_STATES: string[] = USE_CASES.map((useCase) => useCase.committedState);
+
 export function getUseCase(id: string): UseCase {
   return USE_CASES.find((item) => item.id === id) ?? USE_CASES[0]!;
 }

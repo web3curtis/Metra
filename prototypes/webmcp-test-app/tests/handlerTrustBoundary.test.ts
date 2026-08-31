@@ -85,7 +85,12 @@ describe("the boundary does not take the handler's word for an effect", () => {
 
     // Reporting ok here would tell the agent a ticket exists when none does.
     expect(env.ok).toBe(false);
-    expect(env.error).toBe("unverified_duplicate_claim");
+    expect(env.error).toBe("unverified_effect");
+    // Authority was readable and said no such record exists, which is why the
+    // handler's duplicate claim is refused rather than merely left unconfirmed.
+    const failure = env.structured_failure as Record<string, unknown>;
+    expect(failure.category).toBe("ambiguous_effect");
+    expect(failure.actual).toBe("authority_says_absent");
     expect(env.allowed_next_action).toBe("reconcile");
     expect(env.next_tool).toBe("support.get_support_ticket");
     expect(env.effect_count).toBe(0);

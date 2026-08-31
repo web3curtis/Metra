@@ -158,7 +158,7 @@ describe("adversarial: no effect without current required evidence", () => {
     expect(h.effects()).toBe(1);
   });
 
-  it("A6c allows a second effect only after fresh re-observation", () => {
+  it("A6c holds a spent effect budget closed even after fresh re-observation", () => {
     const h = harness();
     h.call("support.search_help", {});
     h.call("support.get_customer_context", {});
@@ -167,8 +167,14 @@ describe("adversarial: no effect without current required evidence", () => {
     h.call("support.search_help", {});
     h.call("support.get_customer_context", {});
     const second = h.call(SUPPORT_ACT, { operation_id: "adv-a6c-two", expected_revision: 2 });
-    expect(second.ok).toBe(true);
-    expect(h.effects()).toBe(2);
+    // Exactly-once is declared per consequential tool rather than inferred from
+    // whether the freshness gate happens to be open, so re-observing does not
+    // buy a second effect. Fresh evidence used to reopen dispatch here.
+    expect(second.ok).toBe(false);
+    expect(second.error).toBe("effect_budget_exhausted");
+    const failure = second.structured_failure as Record<string, unknown>;
+    expect(failure.expected).toBe("at_most_1_effects");
+    expect(h.effects()).toBe(1);
   });
 
   it("A7 commits exactly once when the same operation_id is replayed", () => {
@@ -273,12 +279,16 @@ describe("adversarial: reconciliation cannot be spoofed", () => {
     expect(env.allowed_next_action).toBe("reconcile");
   });
 
-  it("A15 reports unavailable rather than inventing a record for an unknown id", () => {
+  it("A15 resolves an unknown id as absent rather than inventing a record", () => {
     const h = harness();
     const env = h.call("support.get_support_ticket", { operation_id: "never-existed" });
     expect(env.ok).toBe(true);
     const data = env.data as Record<string, unknown>;
-    expect(data.authority).toBe("unavailable");
+    // Authority answered, and its answer was "no such effect". That is a
+    // resolution, not a failure to read, so it is reported as authoritative
+    // with an explicit absent resolution instead of as unavailable.
+    expect(data.authority).toBe("authoritative");
+    expect(data.resolution).toBe("absent");
     expect(data.record).toBeNull();
     expect(data.effect_count).toBe(0);
   });
