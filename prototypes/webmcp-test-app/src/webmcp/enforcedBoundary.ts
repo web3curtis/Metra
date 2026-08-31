@@ -312,6 +312,9 @@ function validateShape(
     if (typeof value !== "string" || value.length === 0) {
       return { ok: false, detail: `missing_${key}` };
     }
+    if (spec.minLength !== undefined && value.length < spec.minLength) {
+      return { ok: false, detail: `${key}_below_min_length` };
+    }
   }
   if (contract.shape.unknown_field_policy === "reject") {
     const allowed = new Set(contract.shape.required_args);
@@ -666,7 +669,42 @@ export function createEnforcedHandler(input: {
 
     let checkpointId: string | undefined;
     if (contract.role === "act") {
-      const duplicate = Boolean(data.duplicate_prevented);
+      // A handler may report that it suppressed a duplicate rather than
+      // committing. The boundary honours that only when its own scoped ledger
+      // already records the commit; otherwise the handler is asserting an effect
+      // the boundary never saw land, and the agent must reconcile instead of
+      // being told the work is done.
+      const claimsDuplicate = Boolean(data.duplicate_prevented);
+      const ledgerCommitted = operationId
+        ? session.phaseOf(useCase.id, operationId) === "committed"
+        : false;
+      if (claimsDuplicate && !ledgerCommitted) {
+        const structured_failure = buildStructuredFailure({
+          category: "execution_failure",
+          tool: toolId,
+          expected: "committed_effect_in_boundary_ledger",
+          actual: "duplicate_prevented_without_prior_commit",
+          owner: "reliability_boundary",
+          recoverability: "automatic",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["duplicate_prevented", "boundary_ledger_miss"],
+        });
+        return refuse({
+          protocol,
+          session,
+          toolId,
+          useCase,
+          error: "unverified_duplicate_claim",
+          structured_failure,
+          allowed_next_action: "reconcile",
+          next_tool: reconcilerFor(useCase),
+          operationId,
+          mechanisms: [...mechanisms, "C2", "D2"],
+        });
+      }
+
+      const duplicate = claimsDuplicate;
       if (!duplicate && operationId) {
         session.recordCommit(
           useCase.id,
