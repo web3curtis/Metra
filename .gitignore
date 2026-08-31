@@ -12,6 +12,8 @@ test-results/
 sandbox/vendor-eval/**/node_modules/
 .turbo/
 .vite/
+.falsifier-evidence/
+.publish-worktree/
 
 # Personal / research — never publish
 private/

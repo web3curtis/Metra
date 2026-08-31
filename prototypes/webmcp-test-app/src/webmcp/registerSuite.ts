@@ -4,6 +4,7 @@ import {
   ProtocolRunContext,
   wrapRegisteredToolExecute,
 } from "../../../reliability-boundary/spine/protocolSpine.ts";
+import { BoundarySession, createEnforcedHandler } from "./enforcedBoundary.ts";
 
 type ModelContextTool = {
   name: string;
@@ -25,14 +26,16 @@ export type SuiteRegistration = {
   registered: string[];
   detail: string;
   protocol: ProtocolRunContext;
+  session: BoundarySession;
 };
 
 export function registerUseCaseSuite(
   runtime: SuiteToolRuntime,
   doc: Document = document,
-  options: { protocol?: ProtocolRunContext } = {},
+  options: { protocol?: ProtocolRunContext; session?: BoundarySession } = {},
 ): SuiteRegistration {
   const protocol = options.protocol ?? new ProtocolRunContext();
+  const session = options.session ?? new BoundarySession();
   const context = (doc as ModelContextDocument).modelContext;
   if (!context?.registerTool) {
     return {
@@ -40,6 +43,7 @@ export function registerUseCaseSuite(
       registered: [],
       detail: "Native WebMCP is unavailable in this browser. The visible replay still works; registered-tool audit must fail closed.",
       protocol,
+      session,
     };
   }
 
@@ -47,18 +51,23 @@ export function registerUseCaseSuite(
   for (const useCase of USE_CASES) {
     for (const tool of useCase.tools) {
       const scopedName = `${useCase.id}.${tool.name}`;
+      const enforced = createEnforcedHandler({
+        useCase,
+        tool,
+        session,
+        protocol,
+        handler: (args) => runtime.execute(useCase, tool.name, args ?? {}),
+      });
       context.registerTool({
         name: scopedName,
         title: `${useCase.eyebrow}: ${tool.title}`,
         description: `${tool.description} Simulated ${useCase.eyebrow.toLowerCase()} sandbox; no real external effect.`,
         inputSchema: tool.inputSchema,
         annotations: { readOnlyHint: tool.readOnly },
-        execute: wrapRegisteredToolExecute(
-          scopedName,
-          (args) => runtime.execute(useCase, tool.name, args ?? {}),
-          protocol,
-          { readOnly: tool.readOnly },
-        ),
+        execute: wrapRegisteredToolExecute(scopedName, enforced, protocol, {
+          readOnly: tool.readOnly,
+          isReconcileTool: tool.role === "reconcile",
+        }),
       });
       registered.push(scopedName);
     }
@@ -67,7 +76,8 @@ export function registerUseCaseSuite(
   return {
     lane: "native",
     registered,
-    detail: `${registered.length} typed tools registered across ${USE_CASES.length} simulated web applications via shared protocol spine.`,
+    detail: `${registered.length} typed tools registered across ${USE_CASES.length} simulated web applications behind one A–D2 enforcement boundary.`,
     protocol,
+    session,
   };
 }
