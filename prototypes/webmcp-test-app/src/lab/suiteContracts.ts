@@ -39,6 +39,12 @@ export type SuiteToolContract = {
   retry_policy: RetryPolicy;
   /** Single legal next action offered when this tool is blocked. */
   blocked_next_action: "observe" | "reconcile" | "stop";
+  /**
+   * How many confirmed effects this tool may produce in one session. Every task in
+   * this suite asks for exactly one, so the limit is declared and enforced rather
+   * than left to depend on when the verify-before-acting gate happens to clear.
+   */
+  effect_budget: number | null;
 };
 
 const FAILURE_CATEGORIES = [
@@ -97,6 +103,7 @@ export function suiteToolContracts(): Record<string, SuiteToolContract> {
         retry_policy: tool.retryPolicy,
         blocked_next_action:
           tool.role === "act" ? "observe" : tool.role === "reconcile" ? "reconcile" : "stop",
+        effect_budget: tool.role === "act" ? 1 : null,
       };
     }
   }

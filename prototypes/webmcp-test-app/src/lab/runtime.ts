@@ -200,6 +200,14 @@ export class SuiteToolRuntime {
     return this.effects.size;
   }
 
+  /**
+   * Effects are stored per use case. A shared operation-id space would let a
+   * reservation be "reconciled" against an unrelated order and report success.
+   */
+  private effectKey(useCaseId: string, operationId: string): string {
+    return `${useCaseId}::${operationId}`;
+  }
+
   private bucket(useCaseId: string): Map<string, Observation> {
     let map = this.observations.get(useCaseId);
     if (!map) {
@@ -259,12 +267,15 @@ export class SuiteToolRuntime {
           structured_failure,
         };
       }
-      const effect = this.effects.get(operationId) ?? null;
+      const effect = this.effects.get(this.effectKey(useCase.id, operationId)) ?? null;
+      // This store is the authority, so "no record" is an answer, not a failure to
+      // answer. Conflating the two would make a proven non-effect look ambiguous.
       return {
         ok: true,
         data: {
           operation_id: operationId,
-          authority: effect ? "authoritative" : "unavailable",
+          authority: "authoritative",
+          resolution: effect ? "committed" : "absent",
           effect,
           effect_id: effect?.id ?? null,
           record: effect?.record ?? null,
@@ -288,7 +299,7 @@ export class SuiteToolRuntime {
     }
 
     // D1: same operation_id reuses the committed record before any stale/missing checks.
-    const existing = this.effects.get(operationId);
+    const existing = this.effects.get(this.effectKey(useCase.id, operationId));
     if (existing) {
       return {
         ok: true,
@@ -351,7 +362,7 @@ export class SuiteToolRuntime {
       revision_at_commit: this.revision,
       record: { ...useCase.effectRecord, operation_id: operationId },
     };
-    this.effects.set(operationId, effect);
+    this.effects.set(this.effectKey(useCase.id, operationId), effect);
     this.revision += 1;
     return {
       ok: true,

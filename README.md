@@ -67,6 +67,44 @@ A refusal is only useful if the agent can act on it. Metra never returns a bare 
 
 One legal next action, named. Zero effects. The domain handler was never reached.
 
+## Where the guarantee ends
+
+The boundary is worth exactly as much as its assumptions, so they are stated
+plainly rather than buried.
+
+**A response is not an observation.** Success, failure, and exceptions from a
+consequential call are all treated as claims. Only the site's reconcile tool can
+say whether an effect exists, and it must answer completely: authoritative, with
+an explicit `committed` or `absent` resolution, a matching record, an integer
+revision, and a count. Anything partial or self-contradictory is read as *unknown*,
+which is reported as an ambiguous effect rather than resolved in either direction.
+
+**It trusts the site's own reconcile tool as authority.** A handler that claims
+success without doing anything is caught, because the claim and the record
+disagree. A site whose *reconcile tool itself* lies is not caught: at that point
+there is no ground truth left to appeal to. What the boundary buys is that a single
+lying handler can no longer convince an agent, and any disagreement between a
+handler and authority is reported rather than smoothed over.
+
+**"One legal next action" is about consequential calls.** After a refusal, the
+boundary names the one tool that can make progress and refuses further
+consequential dispatch until the obligation is discharged. It does not freeze the
+page — unrelated read-only tools still answer, which is what lets an agent gather
+the evidence it was told to gather. When reconciliation cannot resolve an effect,
+the obligation is *not* discharged: the run escalates rather than retrying, because
+an unknown effect is worse than a stalled one.
+
+**"Exactly once" is declared, not assumed.** Each consequential tool carries an
+`effect_budget` — one, for every task in this suite. Once it is spent, no amount of
+fresh evidence reopens dispatch; the run is told to stop. A byte-identical retry of
+the same `operation_id` is still idempotent and returns the original record.
+
+**Boundary state lives for one page load.** The session mirror and its checkpoints
+are in memory. After a reload the boundary starts cold and knows nothing about
+earlier effects until it reconciles; until then it reports authority's count
+alongside its own, and never the lower number alone. Durable restoration across
+reloads is not implemented.
+
 ## Install
 
 Metra ships as a plugin with a universal agent skill, so any agent framework that
@@ -112,7 +150,7 @@ npm run dev     # open the printed URL; toggle mechanisms A–D2 live
 ```
 
 ```bash
-npm test        # 131 tests, including the live registered-path falsifiers
+npm test        # 148 tests, including the live registered-path falsifiers
 npm run build
 ```
 
@@ -130,11 +168,15 @@ prompt, so they hold whoever wrote the handler:
 | **B** | Freshness | Tracks which observations are current; blocks stale consequential calls |
 | **C1** | Failure semantics | Normalizes every outcome — including malformed success |
 | **C2** | Diagnosis | Binds exactly one legal next action and enforces it on the next call |
-| **D1** | Effect safety | Operation identity, duplicate suppression, reconcile-before-retry |
-| **D2** | Recovery | Verified, resumable checkpoints bound to the live run |
+| **D1** | Effect safety | Operation identity, declared effect budget, reconcile-before-retry |
+| **D2** | Recovery | Checkpoints bound to the live run, marked resumable only when recovery supports the state |
 
 All six appear in a single live trace from the registered path
 (`tests/liveBoundary.test.ts`), not in six separate unit tests.
+
+Every defect found by independent review is pinned by a regression named after it:
+`tests/round3Regressions.test.ts`, `tests/round4Regressions.test.ts`, and
+`tests/round5Regressions.test.ts`.
 
 ## Layout
 

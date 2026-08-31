@@ -4,7 +4,7 @@ import {
   ProtocolRunContext,
   wrapRegisteredToolExecute,
 } from "../../../reliability-boundary/spine/protocolSpine.ts";
-import { BoundarySession, createEnforcedHandler } from "./enforcedBoundary.ts";
+import { BoundarySession, createEnforcedHandler, describeDecisionBlock } from "./enforcedBoundary.ts";
 
 type ModelContextTool = {
   name: string;
@@ -49,6 +49,7 @@ export function registerUseCaseSuite(
 
   const registered: string[] = [];
   for (const useCase of USE_CASES) {
+    const reconciler = useCase.tools.find((item) => item.role === "reconcile");
     for (const tool of useCase.tools) {
       const scopedName = `${useCase.id}.${tool.name}`;
       const enforced = createEnforcedHandler({
@@ -57,6 +58,12 @@ export function registerUseCaseSuite(
         session,
         protocol,
         handler: (args) => runtime.execute(useCase, tool.name, args ?? {}),
+        // Consequential tools confirm their own effect against authority before
+        // the boundary will report a commit.
+        verify:
+          tool.role === "act" && reconciler
+            ? (operationId) => runtime.execute(useCase, reconciler.name, { operation_id: operationId })
+            : undefined,
       });
       context.registerTool({
         name: scopedName,
@@ -67,6 +74,8 @@ export function registerUseCaseSuite(
         execute: wrapRegisteredToolExecute(scopedName, enforced, protocol, {
           readOnly: tool.readOnly,
           isReconcileTool: tool.role === "reconcile",
+          describeBlock: ({ code, action }) =>
+            describeDecisionBlock({ useCase, tool, session, protocol, code, action }),
         }),
       });
       registered.push(scopedName);

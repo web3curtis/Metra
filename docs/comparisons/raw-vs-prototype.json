@@ -70,7 +70,7 @@
       "effect_count": 1,
       "correct": true,
       "blocked_calls": 1,
-      "offered_next_action": null,
+      "offered_next_action": "reconcile -> support.get_support_ticket",
       "transcript": [
         {
           "tool": "support.search_help",

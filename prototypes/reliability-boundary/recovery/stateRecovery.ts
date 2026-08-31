@@ -16,7 +16,28 @@ export type ObservedRuntime = {
   expected_seat_ids?: string[];
   price_drift: boolean;
   seat_drift: boolean;
+  /**
+   * States that mean the consequential effect is already done. Supplied by the
+   * caller so this policy stays domain-neutral instead of knowing about orders.
+   */
+  committed_effect_states?: string[];
 };
+
+const DEFAULT_COMMITTED_STATES = ["PURCHASED"];
+
+const RESUMABLE_DRAFT_STATES = ["ORDER_REVIEWED", "SEATS_RESERVED", "JOURNEYS_SELECTED"];
+
+/**
+ * Whether this policy can actually decide what to do from a given state. A
+ * checkpoint may only be advertised as resumable when this returns true.
+ */
+export function recoveryPolicySupports(state: string, committedEffectStates: string[] = []): boolean {
+  return (
+    [...DEFAULT_COMMITTED_STATES, ...committedEffectStates].includes(state) ||
+    RESUMABLE_DRAFT_STATES.includes(state) ||
+    state === "EMPTY"
+  );
+}
 
 export type RecoveryDecision = {
   action: RecoveryAction;
@@ -30,10 +51,14 @@ export function decideRecovery(observed: ObservedRuntime): RecoveryDecision {
     `purchase_tool:${observed.tools_include_purchase}`,
   ];
 
-  if (observed.order_state === "PURCHASED" && observed.order_id && observed.receipt_id) {
+  const committedStates = [...DEFAULT_COMMITTED_STATES, ...(observed.committed_effect_states ?? [])];
+  if (committedStates.includes(observed.order_state) && observed.order_id && observed.receipt_id) {
     return {
       action: "stop",
-      rationale: "Already purchased with receipt — do not resume purchase",
+      rationale:
+        observed.order_state === "PURCHASED"
+          ? "Already purchased with receipt — do not resume purchase"
+          : `Effect already committed in state ${observed.order_state} — do not repeat it`,
       evidence: [...evidence, `order:${observed.order_id}`, `receipt:${observed.receipt_id}`],
     };
   }
@@ -62,11 +87,7 @@ export function decideRecovery(observed: ObservedRuntime): RecoveryDecision {
     };
   }
 
-  if (
-    observed.order_state === "ORDER_REVIEWED" ||
-    observed.order_state === "SEATS_RESERVED" ||
-    observed.order_state === "JOURNEYS_SELECTED"
-  ) {
+  if (RESUMABLE_DRAFT_STATES.includes(observed.order_state)) {
     return {
       action: "resume",
       rationale: `Re-observed ${observed.order_state}; resume from checkpoint`,

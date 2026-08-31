@@ -355,6 +355,20 @@ export class ProtocolRunContext {
   }
 }
 
+/**
+ * True when a reconcile result actually settled the question of the effect.
+ * Tools that do not report an authority are treated as resolved, so this stays
+ * compatible with reconcilers written before the field existed.
+ */
+function reconcileResolved(result: unknown): boolean {
+  if (!result || typeof result !== "object") return true;
+  const data = (result as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return true;
+  const authority = (data as { authority?: unknown }).authority;
+  if (authority === undefined || authority === null) return true;
+  return authority === "authoritative";
+}
+
 export type BoundaryInvoke = (
   name: string,
   args: Record<string, unknown>,
@@ -369,7 +383,16 @@ export function wrapRegisteredToolExecute(
   toolName: string,
   handler: (args: Record<string, unknown>) => unknown,
   ctx: ProtocolRunContext,
-  options: { readOnly?: boolean; isReconcileTool?: boolean } = {},
+  options: {
+    readOnly?: boolean;
+    isReconcileTool?: boolean;
+    /**
+     * Builds the refusal a caller receives when the decision gate blocks dispatch.
+     * Without it the gate would answer in a different shape from every other
+     * refusal, which is exactly the inconsistency an agent cannot handle.
+     */
+    describeBlock?: (input: { tool: string; code: string; action: DecisionAction }) => unknown;
+  } = {},
 ): (args: Record<string, unknown>) => unknown {
   return (args: Record<string, unknown>) => {
     const readOnly = Boolean(options.readOnly);
@@ -406,6 +429,9 @@ export function wrapRegisteredToolExecute(
         },
       });
       if (ctx.protocol_phase === "plan") ctx.transitionProtocol("decide");
+      if (options.describeBlock) {
+        return options.describeBlock({ tool: toolName, code: gate.code, action: gate.action });
+      }
       return {
         ok: false,
         error: gate.code,
@@ -455,7 +481,18 @@ export function wrapRegisteredToolExecute(
       }
       if (ok && readOnly) ctx.noteSuccessfulObserve();
       if (ok && (options.isReconcileTool || toolName === "get_order")) {
-        ctx.noteSuccessfulReconcile();
+        // A reconcile that ran without resolving anything has not answered the
+        // question that closed the gate. Treating it as satisfaction would let an
+        // unverified effect be followed by a second one.
+        if (reconcileResolved(result)) {
+          ctx.noteSuccessfulReconcile();
+        } else if (ctx.decision?.action === "reconcile") {
+          ctx.setDecision({
+            action: "escalate",
+            reason_code: "reconcile_could_not_resolve_effect",
+            evidence_refs: [toolName, ctx.identities.operation_id ?? "unknown_operation"],
+          });
+        }
       }
       ctx.transitionProtocol("verify");
       ctx.record({

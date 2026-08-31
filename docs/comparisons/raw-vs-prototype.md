@@ -55,6 +55,7 @@ ok   support.get_customer_context — effects=0
 ok   support.create_support_ticket — effects=1
 fail support.create_support_ticket — decision_requires_reconcile (effects=1)
 result: 1 effect(s) — correct
+legal next action: reconcile -> support.get_support_ticket
 ```
 
 ## S3 — Acts a second time on evidence that has gone stale
