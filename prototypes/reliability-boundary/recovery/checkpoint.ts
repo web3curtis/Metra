@@ -199,7 +199,18 @@ export function recoverFromInterruption(input: {
     },
   });
 
-  const decision = decideRecovery(input.observed);
+  // A verified checkpoint that recorded a committed effect tells recovery what a
+  // completed state looks like for this workflow, so the policy does not need to
+  // know the vocabulary of every application in advance.
+  const checkpointRecordsCommittedEffect = Boolean(
+    input.checkpoint?.postconditions_met && input.checkpoint.order_id && input.checkpoint.receipt_id,
+  );
+  const decision = decideRecovery({
+    ...input.observed,
+    committed_effect_states: checkpointRecordsCommittedEffect
+      ? [...(input.observed.committed_effect_states ?? []), input.checkpoint!.order_state]
+      : input.observed.committed_effect_states,
+  });
   input.protocol.setDecision({
     action:
       decision.action === "resume"

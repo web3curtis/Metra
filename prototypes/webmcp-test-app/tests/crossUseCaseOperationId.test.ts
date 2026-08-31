@@ -88,7 +88,12 @@ describe("cross-use-case operation_id reuse", () => {
     });
 
     expect(attack.ok).toBe(false);
-    expect(attack.error).toBe("operation_id_scope_conflict");
+    expect(attack.error).toBe("operation_id_conflict");
+    // The refusal names the tool that already owns the id, so the scope of the
+    // conflict is recoverable from the failure rather than only from its code.
+    const failure = attack.structured_failure as Record<string, unknown>;
+    expect(failure.actual).toBe("operation_id_bound_to_other_tool");
+    expect(failure.evidence).toContain("commerce.create_order");
     expect(attack.allowed_next_action).toBe("stop");
     // The domain handler must never be reached.
     expect(h.dispatched).toEqual(dispatchedBefore);
