@@ -51,6 +51,16 @@ type ObservationMirror = {
 };
 
 /**
+ * An operation_id names one effect inside one application. The same session is
+ * shared by every registered tool, so the committed phase has to be looked up
+ * under the use case that produced it. A session-global key would let app A's
+ * commit answer app B's duplicate question.
+ */
+function effectScope(useCaseId: string, operationId: string): string {
+  return `${useCaseId}\u0000${operationId}`;
+}
+
+/**
  * Boundary state shared by every tool registered in one session. Mirrors only what
  * the boundary observes through registered calls, so it stays truthful even if the
  * domain runtime is swapped out.
@@ -59,6 +69,7 @@ export class BoundarySession {
   readonly journal = new EffectJournal();
   private readonly observations = new Map<string, Map<string, ObservationMirror>>();
   private readonly committed = new Map<string, EffectPhase>();
+  private readonly operationOwners = new Map<string, string>();
   private readonly checkpoints: VerifiedCheckpoint[] = [];
   private revision = 1;
   private effects = 0;
@@ -79,8 +90,19 @@ export class BoundarySession {
     return this.checkpoints.at(-1) ?? null;
   }
 
-  phaseOf(operationId: string): EffectPhase {
-    return this.committed.get(operationId) ?? "not_started";
+  phaseOf(useCaseId: string, operationId: string): EffectPhase {
+    return this.committed.get(effectScope(useCaseId, operationId)) ?? "not_started";
+  }
+
+  /** The consequential tool that first bound this operation_id, if any. */
+  operationOwner(operationId: string): string | null {
+    return this.operationOwners.get(operationId) ?? null;
+  }
+
+  claimOperation(operationId: string, toolId: string): void {
+    if (!this.operationOwners.has(operationId)) {
+      this.operationOwners.set(operationId, toolId);
+    }
   }
 
   observationsFor(useCaseId: string): Map<string, ObservationMirror> {
@@ -100,9 +122,10 @@ export class BoundarySession {
     });
   }
 
-  recordCommit(operationId: string, revisionAfter: number): void {
-    if (this.committed.get(operationId) === "committed") return;
-    this.committed.set(operationId, "committed");
+  recordCommit(useCaseId: string, operationId: string, revisionAfter: number): void {
+    const scope = effectScope(useCaseId, operationId);
+    if (this.committed.get(scope) === "committed") return;
+    this.committed.set(scope, "committed");
     this.effects += 1;
     this.revision = revisionAfter;
   }
@@ -289,6 +312,9 @@ function validateShape(
     if (typeof value !== "string" || value.length === 0) {
       return { ok: false, detail: `missing_${key}` };
     }
+    if (spec.minLength !== undefined && value.length < spec.minLength) {
+      return { ok: false, detail: `${key}_below_min_length` };
+    }
   }
   if (contract.shape.unknown_field_policy === "reject") {
     const allowed = new Set(contract.shape.required_args);
@@ -392,28 +418,63 @@ export function createEnforcedHandler(input: {
         operation_id: operationId,
         intent_fingerprint: fingerprint,
       });
+      const owner = session.operationOwner(operationId);
       session.journal.append({
         at_ms: Date.now(),
         operation_id: operationId,
         intent_fingerprint: fingerprint,
         tool: toolId,
-        phase: session.phaseOf(operationId),
+        phase: session.phaseOf(useCase.id, operationId),
         note: conflict ? "intent_changed_under_same_operation_id" : "intent_recorded",
       });
       emit(protocol, "D1", "effect_identity_bound", {
         tool: toolId,
         operation_id: operationId,
         intent_fingerprint: fingerprint,
-        prior_phase: session.phaseOf(operationId),
+        prior_phase: session.phaseOf(useCase.id, operationId),
         intent_conflict: conflict,
+        operation_owner: owner,
       });
 
-      // An existing committed record is reconciled before any staleness rejection.
-      if (contract.role === "act" && session.phaseOf(operationId) === "committed") {
-        emit(protocol, "D1", "duplicate_suppressed_by_operation_id", {
-          tool: toolId,
-          operation_id: operationId,
-        });
+      // One operation_id names one effect. A consequential call that reuses an
+      // operation_id already bound to a different consequential tool is an
+      // identity conflict, and must fail closed rather than inherit that tool's
+      // duplicate-suppression or committed phase.
+      if (contract.role === "act") {
+        if (owner && owner !== toolId) {
+          const structured_failure = buildStructuredFailure({
+            category: "invalid_input_or_precondition",
+            tool: toolId,
+            expected: `operation_id_unbound_or_owned_by:${toolId}`,
+            actual: `operation_id_owned_by:${owner}`,
+            owner: "reliability_boundary",
+            recoverability: "non_recoverable",
+            state_revision: session.currentRevision(),
+            operation_id: operationId,
+            evidence: ["effect_identity_bound", owner],
+          });
+          return refuse({
+            protocol,
+            session,
+            toolId,
+            useCase,
+            error: "operation_id_scope_conflict",
+            structured_failure,
+            allowed_next_action: "stop",
+            next_tool: null,
+            operationId,
+            mechanisms: [...mechanisms, "C1", "C2", "D2"],
+          });
+        }
+        session.claimOperation(operationId, toolId);
+
+        // An existing committed record is reconciled before any staleness rejection.
+        if (session.phaseOf(useCase.id, operationId) === "committed") {
+          emit(protocol, "D1", "duplicate_suppressed_by_operation_id", {
+            tool: toolId,
+            operation_id: operationId,
+          });
+        }
       }
     }
 
@@ -431,7 +492,9 @@ export function createEnforcedHandler(input: {
         freshness_dependencies: contract.freshness_dependencies,
       });
 
-      const alreadyCommitted = operationId ? session.phaseOf(operationId) === "committed" : false;
+      const alreadyCommitted = operationId
+        ? session.phaseOf(useCase.id, operationId) === "committed"
+        : false;
       const blocking = [...verdict.never_observed, ...verdict.stale];
       if (blocking.length > 0 && !alreadyCommitted) {
         const stale = verdict.stale.length > 0;
@@ -606,9 +669,48 @@ export function createEnforcedHandler(input: {
 
     let checkpointId: string | undefined;
     if (contract.role === "act") {
-      const duplicate = Boolean(data.duplicate_prevented);
+      // A handler may report that it suppressed a duplicate rather than
+      // committing. The boundary honours that only when its own scoped ledger
+      // already records the commit; otherwise the handler is asserting an effect
+      // the boundary never saw land, and the agent must reconcile instead of
+      // being told the work is done.
+      const claimsDuplicate = Boolean(data.duplicate_prevented);
+      const ledgerCommitted = operationId
+        ? session.phaseOf(useCase.id, operationId) === "committed"
+        : false;
+      if (claimsDuplicate && !ledgerCommitted) {
+        const structured_failure = buildStructuredFailure({
+          category: "execution_failure",
+          tool: toolId,
+          expected: "committed_effect_in_boundary_ledger",
+          actual: "duplicate_prevented_without_prior_commit",
+          owner: "reliability_boundary",
+          recoverability: "automatic",
+          state_revision: session.currentRevision(),
+          operation_id: operationId,
+          evidence: ["duplicate_prevented", "boundary_ledger_miss"],
+        });
+        return refuse({
+          protocol,
+          session,
+          toolId,
+          useCase,
+          error: "unverified_duplicate_claim",
+          structured_failure,
+          allowed_next_action: "reconcile",
+          next_tool: reconcilerFor(useCase),
+          operationId,
+          mechanisms: [...mechanisms, "C2", "D2"],
+        });
+      }
+
+      const duplicate = claimsDuplicate;
       if (!duplicate && operationId) {
-        session.recordCommit(operationId, Number(data.revision ?? session.currentRevision() + 1));
+        session.recordCommit(
+          useCase.id,
+          operationId,
+          Number(data.revision ?? session.currentRevision() + 1),
+        );
       }
       session.syncRevision(Number(data.revision ?? session.currentRevision()));
       if (operationId) {
