@@ -8,11 +8,34 @@ export type UseCaseId =
 
 export type Adversity = "stale_state" | "ambiguous_commit" | "invalid_precondition";
 
+/** Role drives the neutral enforcement engine; it never branches on domain nouns. */
+export type ToolRole = "discover" | "inspect" | "act" | "reconcile";
+
+export type FreshnessDependency =
+  | "capability_epoch"
+  | "document_epoch"
+  | "session_epoch"
+  | "state_revision";
+
+export type RetryPolicy = "idempotent_read" | "reconcile_before_retry" | "no_retry";
+
 export type LabTool = {
   name: string;
   title: string;
   description: string;
   readOnly: boolean;
+  role: ToolRole;
+  /** Verified-observation key this tool records on success. */
+  producesEvidence?: string;
+  /** Verified-observation keys that must be current before this tool may dispatch. */
+  requiresEvidence?: string[];
+  /** Dependencies whose change invalidates this tool's observation or dispatch. */
+  freshness: FreshnessDependency[];
+  /** Fields that must be present in a successful result, or the success is malformed. */
+  postconditions: string[];
+  retryPolicy: RetryPolicy;
+  /** Tool-specific evidence returned by a read; never a shared generic payload. */
+  observation?: Record<string, unknown>;
   inputSchema: Record<string, unknown>;
 };
 
@@ -33,10 +56,15 @@ export type UseCase = {
   adversityLabel: string;
   objectLabel: string;
   effectLabel: string;
+  /** Workflow state reached once the consequential effect is committed. */
+  committedState: string;
+  /** Declarative shape of the authoritative record produced by the action tool. */
+  effectRecord: Record<string, unknown>;
   tools: LabTool[];
 };
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
+
 const operationSchema = {
   type: "object",
   properties: {
@@ -55,12 +83,106 @@ const operationSchema = {
   additionalProperties: false,
 };
 
-function readTool(name: string, title: string, description: string): LabTool {
-  return { name, title, description, readOnly: true, inputSchema: emptySchema };
+/**
+ * Reconciliation must be able to receive the operation identity, otherwise an
+ * ambiguous commit can never be resolved from the agent side.
+ */
+const reconcileSchema = {
+  type: "object",
+  properties: {
+    operation_id: {
+      type: "string",
+      description: "Operation ID of the effect to reconcile authoritatively.",
+      minLength: 6,
+    },
+  },
+  required: ["operation_id"],
+  additionalProperties: false,
+};
+
+function discoverTool(
+  name: string,
+  title: string,
+  description: string,
+  producesEvidence: string,
+  observation: Record<string, unknown>,
+): LabTool {
+  return {
+    name,
+    title,
+    description,
+    readOnly: true,
+    role: "discover",
+    producesEvidence,
+    freshness: ["capability_epoch"],
+    postconditions: ["evidence_id"],
+    retryPolicy: "idempotent_read",
+    observation,
+    inputSchema: emptySchema,
+  };
 }
 
-function actionTool(name: string, title: string, description: string): LabTool {
-  return { name, title, description, readOnly: false, inputSchema: operationSchema };
+function inspectTool(
+  name: string,
+  title: string,
+  description: string,
+  producesEvidence: string,
+  observation: Record<string, unknown>,
+): LabTool {
+  return {
+    name,
+    title,
+    description,
+    readOnly: true,
+    role: "inspect",
+    producesEvidence,
+    freshness: ["capability_epoch", "state_revision"],
+    postconditions: ["evidence_id", "observed_revision"],
+    retryPolicy: "idempotent_read",
+    observation,
+    inputSchema: emptySchema,
+  };
+}
+
+function actTool(
+  name: string,
+  title: string,
+  description: string,
+  requiresEvidence: string[],
+  postconditions: string[],
+): LabTool {
+  return {
+    name,
+    title,
+    description,
+    readOnly: false,
+    role: "act",
+    requiresEvidence,
+    freshness: ["capability_epoch", "state_revision"],
+    postconditions: ["operation_id", "effect_id", "revision", ...postconditions],
+    retryPolicy: "reconcile_before_retry",
+    inputSchema: operationSchema,
+  };
+}
+
+function reconcileTool(
+  name: string,
+  title: string,
+  description: string,
+  observation: Record<string, unknown>,
+): LabTool {
+  return {
+    name,
+    title,
+    description,
+    readOnly: true,
+    role: "reconcile",
+    freshness: ["capability_epoch"],
+    postconditions: ["operation_id", "authority"],
+    retryPolicy: "idempotent_read",
+    observation,
+    inputSchema: reconcileSchema,
+  };
 }
 
 export const USE_CASES: UseCase[] = [
@@ -81,11 +203,44 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "The order commits, but the response times out.",
     objectLabel: "Keychron V6 Max · A$169 · rev 3",
     effectLabel: "simulated order",
+    committedState: "ORDER_PLACED",
+    effectRecord: { record_type: "order", product_id: "keychron-v6-max", total_aud: 169, currency: "AUD" },
     tools: [
-      readTool("search_products", "Search products", "Return matching product facts, price, availability, and current revision."),
-      readTool("get_product", "Get product", "Re-observe one product immediately before a consequential action."),
-      actionTool("create_order", "Create order", "Create one simulated order. Requires a stable operation ID and expected revision."),
-      readTool("get_order", "Get order", "Reconcile an order by the current operation ID after an ambiguous response."),
+      discoverTool(
+        "search_products",
+        "Search products",
+        "Return matching product facts, price, availability, and current revision.",
+        "commerce.candidate_products",
+        {
+          matches: [
+            { product_id: "keychron-v6-max", name: "Keychron V6 Max", price_aud: 169, hot_swappable: true },
+            { product_id: "quietkey-pro", name: "QuietKey Pro", price_aud: 199, hot_swappable: true },
+          ],
+          currency: "AUD",
+          budget_aud: 180,
+          within_budget_ids: ["keychron-v6-max"],
+        },
+      ),
+      inspectTool(
+        "get_product",
+        "Get product",
+        "Re-observe one product immediately before a consequential action.",
+        "commerce.selected_product_current",
+        { product_id: "keychron-v6-max", price_aud: 169, hot_swappable: true, in_stock: true },
+      ),
+      actTool(
+        "create_order",
+        "Create order",
+        "Create one simulated order. Requires a stable operation ID and expected revision.",
+        ["commerce.candidate_products", "commerce.selected_product_current"],
+        ["total_aud"],
+      ),
+      reconcileTool(
+        "get_order",
+        "Get order",
+        "Reconcile an order by operation ID after an ambiguous response.",
+        { record_type: "order" },
+      ),
     ],
   },
   {
@@ -105,11 +260,43 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "The fare changes after search and before reservation.",
     objectLabel: "SYD → MEL · Flex · A$389 · rev 7",
     effectLabel: "simulated reservation",
+    committedState: "TRIP_RESERVED",
+    effectRecord: { record_type: "reservation", trip_id: "syd-mel-flex", total_aud: 389, refundable: true },
     tools: [
-      readTool("search_trips", "Search trips", "Return matching trips with fare rules, total price, and revision."),
-      readTool("get_trip", "Get trip", "Refresh the selected trip and its fare revision."),
-      actionTool("reserve_trip", "Reserve trip", "Reserve the selected itinerary against the observed revision."),
-      readTool("get_reservation", "Get reservation", "Read authoritative reservation state by operation ID."),
+      discoverTool(
+        "search_trips",
+        "Search trips",
+        "Return matching trips with fare rules, total price, and revision.",
+        "travel.candidate_trips",
+        {
+          matches: [
+            { trip_id: "syd-mel-flex", total_aud: 389, refundable: true },
+            { trip_id: "syd-mel-saver", total_aud: 254, refundable: false },
+          ],
+          budget_aud: 420,
+          refundable_only_ids: ["syd-mel-flex"],
+        },
+      ),
+      inspectTool(
+        "get_trip",
+        "Get trip",
+        "Refresh the selected trip and its fare revision.",
+        "travel.selected_trip_current",
+        { trip_id: "syd-mel-flex", total_aud: 389, refundable: true, seats_remaining: 4 },
+      ),
+      actTool(
+        "reserve_trip",
+        "Reserve trip",
+        "Reserve the selected itinerary against the observed revision.",
+        ["travel.candidate_trips", "travel.selected_trip_current"],
+        ["total_aud"],
+      ),
+      reconcileTool(
+        "get_reservation",
+        "Get reservation",
+        "Read authoritative reservation state by operation ID.",
+        { record_type: "reservation" },
+      ),
     ],
   },
   {
@@ -129,11 +316,42 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "Another attendee takes the initially observed slot.",
     objectLabel: "Tue 15:00–15:30 · 4 attendees · rev 12",
     effectLabel: "calendar event",
+    committedState: "EVENT_CREATED",
+    effectRecord: { record_type: "event", slot_id: "tue-1500", attendee_count: 4, duration_minutes: 30 },
     tools: [
-      readTool("find_slots", "Find slots", "Return eligible slots with attendee availability and revision."),
-      readTool("get_slot", "Get slot", "Refresh a chosen slot immediately before booking."),
-      actionTool("create_appointment", "Create appointment", "Create one simulated calendar event against the current revision."),
-      readTool("get_appointment", "Get appointment", "Read the event created for an operation ID."),
+      discoverTool(
+        "find_slots",
+        "Find slots",
+        "Return eligible slots with attendee availability and revision.",
+        "calendar.candidate_slots",
+        {
+          matches: [
+            { slot_id: "tue-1500", start: "15:00", duration_minutes: 30, all_attendees_free: true },
+            { slot_id: "tue-1600", start: "16:00", duration_minutes: 30, all_attendees_free: false },
+          ],
+          earliest_after: "14:00",
+        },
+      ),
+      inspectTool(
+        "get_slot",
+        "Get slot",
+        "Refresh a chosen slot immediately before booking.",
+        "calendar.selected_slot_current",
+        { slot_id: "tue-1500", all_attendees_free: true, conflicts: [] },
+      ),
+      actTool(
+        "create_appointment",
+        "Create appointment",
+        "Create one simulated calendar event against the current revision.",
+        ["calendar.candidate_slots", "calendar.selected_slot_current"],
+        ["attendee_count"],
+      ),
+      reconcileTool(
+        "get_appointment",
+        "Get appointment",
+        "Read the event created for an operation ID.",
+        { record_type: "event" },
+      ),
     ],
   },
   {
@@ -153,11 +371,50 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "The agent tries to open a ticket before searching known fixes.",
     objectLabel: "Workspace sync failure · no matching verified fix · rev 4",
     effectLabel: "support ticket",
+    committedState: "TICKET_OPEN",
+    effectRecord: { record_type: "support_ticket", priority: "P2", subject: "Workspace sync failure" },
     tools: [
-      readTool("search_help", "Search help", "Search verified support guidance and return its revision."),
-      readTool("get_customer_context", "Get customer context", "Read simulated account and duplicate-ticket context."),
-      actionTool("create_support_ticket", "Create support ticket", "Open one simulated ticket after evidence and duplicate checks."),
-      readTool("get_support_ticket", "Get support ticket", "Read ticket state by operation ID."),
+      discoverTool(
+        "search_help",
+        "Search help",
+        "Search verified support guidance and return its revision.",
+        "support.verified_help",
+        {
+          query: "workspace stopped syncing",
+          articles: [
+            { article_id: "kb-1042", title: "Sync paused after seat change", verified: true, applies_to_symptom: false },
+            { article_id: "kb-2201", title: "Reauthorise a stalled workspace", verified: true, applies_to_symptom: false },
+          ],
+          verified_fix_applies: false,
+          escalation_justified: true,
+        },
+      ),
+      inspectTool(
+        "get_customer_context",
+        "Get customer context",
+        "Read simulated account and duplicate-ticket context.",
+        "support.customer_context",
+        {
+          account_id: "acct-8842",
+          plan: "team",
+          entitled_to_p2: true,
+          open_tickets: [],
+          duplicate_ticket_found: false,
+        },
+      ),
+      actTool(
+        "create_support_ticket",
+        "Create support ticket",
+        "Open one simulated ticket after evidence and duplicate checks.",
+        ["support.verified_help", "support.customer_context"],
+        ["priority"],
+      ),
+      reconcileTool(
+        "get_support_ticket",
+        "Get support ticket",
+        "Read authoritative ticket state by operation ID.",
+        { record_type: "support_ticket" },
+      ),
     ],
   },
   {
@@ -177,11 +434,51 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "One required check is still failing when the update is attempted.",
     objectLabel: "Launch checklist · 2/3 passed · rev 18",
     effectLabel: "workflow transition",
+    committedState: "TASK_READY",
+    effectRecord: { record_type: "transition", task_id: "launch-checklist", to_state: "Ready", assignee: "dana" },
     tools: [
-      readTool("list_project_tasks", "List tasks", "Return current project tasks and workflow revisions."),
-      readTool("get_task_checks", "Get task checks", "Read authoritative gate status for one task."),
-      actionTool("update_task_status", "Update task status", "Apply a valid simulated workflow transition."),
-      readTool("get_project_task", "Get task", "Verify task state after an update."),
+      discoverTool(
+        "list_project_tasks",
+        "List tasks",
+        "Return current project tasks and workflow revisions.",
+        "projects.task_inventory",
+        {
+          tasks: [
+            { task_id: "launch-checklist", state: "Review", assignee: "dana" },
+            { task_id: "pricing-copy", state: "Ready", assignee: "sam" },
+          ],
+          allowed_transitions: { Review: ["Ready", "Blocked"] },
+        },
+      ),
+      inspectTool(
+        "get_task_checks",
+        "Get task checks",
+        "Read authoritative gate status for one task.",
+        "projects.gate_status",
+        {
+          task_id: "launch-checklist",
+          checks: [
+            { check_id: "build", passed: true },
+            { check_id: "e2e", passed: true },
+            { check_id: "security", passed: true },
+          ],
+          passed_count: 3,
+          required_count: 3,
+        },
+      ),
+      actTool(
+        "update_task_status",
+        "Update task status",
+        "Apply a valid simulated workflow transition.",
+        ["projects.task_inventory", "projects.gate_status"],
+        ["to_state"],
+      ),
+      reconcileTool(
+        "get_project_task",
+        "Get task",
+        "Verify task state after an update.",
+        { record_type: "transition" },
+      ),
     ],
   },
   {
@@ -201,11 +498,42 @@ export const USE_CASES: UseCase[] = [
     adversityLabel: "The approval request is recorded, but the client loses the result.",
     objectLabel: "Data Retention Policy · v8 · owner Legal Ops",
     effectLabel: "approval request",
+    committedState: "APPROVAL_REQUESTED",
+    effectRecord: { record_type: "approval_request", document_id: "data-retention-policy", document_version: 8 },
     tools: [
-      readTool("find_documents", "Find documents", "Return documents, owners, lifecycle state, and revision."),
-      readTool("get_document", "Get document", "Refresh the selected document before requesting approval."),
-      actionTool("request_approval", "Request approval", "Create one simulated approval request for the current revision."),
-      readTool("get_approval", "Get approval", "Reconcile approval state by operation ID."),
+      discoverTool(
+        "find_documents",
+        "Find documents",
+        "Return documents, owners, lifecycle state, and revision.",
+        "documents.candidate_documents",
+        {
+          matches: [
+            { document_id: "data-retention-policy", version: 8, lifecycle: "draft", superseded: false },
+            { document_id: "data-retention-policy", version: 7, lifecycle: "draft", superseded: true },
+          ],
+          latest_version: 8,
+        },
+      ),
+      inspectTool(
+        "get_document",
+        "Get document",
+        "Refresh the selected document before requesting approval.",
+        "documents.selected_document_current",
+        { document_id: "data-retention-policy", version: 8, owner: "Legal Ops", superseded: false },
+      ),
+      actTool(
+        "request_approval",
+        "Request approval",
+        "Create one simulated approval request for the current revision.",
+        ["documents.candidate_documents", "documents.selected_document_current"],
+        ["document_version"],
+      ),
+      reconcileTool(
+        "get_approval",
+        "Get approval",
+        "Reconcile approval state by operation ID.",
+        { record_type: "approval_request" },
+      ),
     ],
   },
 ];
