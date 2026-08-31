@@ -43,6 +43,8 @@ Live judge demo: https://web3curtis.github.io/Metra/
 
 Implementations **A–D2** target a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped), with a shared protocol spine and proof suites under `prototypes/webmcp-test-app/tests/`.
 
+A premature consequential call cannot commit an effect on the registered WebMCP path. The before/after evidence, and the 17 attempts made to defeat it, are in [`docs/BEFORE_AFTER_EVIDENCE.md`](docs/BEFORE_AFTER_EVIDENCE.md). Install and the universal agent prompt are in [`skills/webmcp-reliability/INSTALL.md`](skills/webmcp-reliability/INSTALL.md).
+
 The repository root is a Codex-compatible plugin (`.codex-plugin/plugin.json`) with universal agent instructions in `skills/webmcp-reliability/`.
 
 ## Quick start
