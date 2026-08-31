@@ -54,23 +54,89 @@ describe("WebMCP use-case suite", () => {
   it("enforces revision and idempotency at the tool runtime", () => {
     const runtime = new SuiteToolRuntime();
     const useCase = USE_CASES[0]!;
-    const action = useCase.tools.find((tool) => !tool.readOnly)!;
-    const stale = runtime.execute(useCase, action.name, {
+    const [discover, inspect, action] = useCase.tools;
+    expect(discover && inspect && action && !action.readOnly).toBe(true);
+
+    runtime.execute(useCase, discover!.name, {});
+    runtime.execute(useCase, inspect!.name, {});
+
+    const stale = runtime.execute(useCase, action!.name, {
       operation_id: "op_stale",
       expected_revision: 2,
     });
     expect(stale).toMatchObject({ ok: false, error: "stale_revision" });
 
-    const first = runtime.execute(useCase, action.name, {
+    const first = runtime.execute(useCase, action!.name, {
       operation_id: "op_fixed",
       expected_revision: 1,
     });
     expect(first).toMatchObject({ ok: true });
-    const duplicate = runtime.execute(useCase, action.name, {
+    const duplicate = runtime.execute(useCase, action!.name, {
       operation_id: "op_fixed",
       expected_revision: 2,
     });
     expect(duplicate).toMatchObject({ ok: true, data: { duplicate_prevented: true } });
+  });
+
+  it("blocks premature support ticket with zero effects", () => {
+    const runtime = new SuiteToolRuntime();
+    const support = USE_CASES.find((item) => item.id === "support")!;
+    const premature = runtime.execute(support, "create_support_ticket", {
+      operation_id: "codex-premature-001",
+      expected_revision: 1,
+    });
+    expect(premature).toMatchObject({
+      ok: false,
+      error: "invalid_precondition",
+      effect_count: 0,
+      allowed_next_action: "observe",
+    });
+    expect((premature as { missing_evidence?: string[] }).missing_evidence).toEqual([
+      "support.verified_help",
+      "support.customer_context",
+    ]);
+    expect(runtime.effectCount()).toBe(0);
+
+    runtime.execute(support, "search_help", {});
+    runtime.execute(support, "get_customer_context", {});
+    const committed = runtime.execute(support, "create_support_ticket", {
+      operation_id: "codex-premature-001",
+      expected_revision: 1,
+    });
+    expect(committed).toMatchObject({ ok: true, data: { effect_count: 1 } });
+
+    const reconciled = runtime.execute(support, "get_support_ticket", {
+      operation_id: "codex-premature-001",
+    });
+    expect(reconciled).toMatchObject({
+      ok: true,
+      data: {
+        operation_id: "codex-premature-001",
+        authority: "authoritative",
+        effect_count: 1,
+      },
+    });
+  });
+
+  it("registers the support falsifier on the native WebMCP path", () => {
+    const definitions: Array<{ name: string; execute: (args: Record<string, unknown>) => unknown }> = [];
+    const fakeDocument = {
+      modelContext: {
+        registerTool(definition: typeof definitions[number]) {
+          definitions.push(definition);
+        },
+      },
+    } as unknown as Document;
+    const runtime = new SuiteToolRuntime();
+    registerUseCaseSuite(runtime, fakeDocument);
+    const create = definitions.find((item) => item.name === "support.create_support_ticket");
+    expect(create).toBeTruthy();
+    const premature = create!.execute({
+      operation_id: "codex-premature-001",
+      expected_revision: 1,
+    }) as { ok: boolean; effect_count?: number };
+    expect(premature.ok).toBe(false);
+    expect(premature.effect_count ?? runtime.effectCount()).toBe(0);
   });
 
   it("registers all 24 tools on the native API surface", () => {

@@ -1,7 +1,23 @@
+import { buildStructuredFailure } from "../../../reliability-boundary/semantics/structuredFailure.ts";
 import type { Adversity, UseCase } from "./catalog.ts";
+import { getSuiteToolContract, producerOf } from "./suiteContracts.ts";
 
 export type DirectionStep = "observe" | "validate" | "act" | "verify" | "stop";
 export type TraceStatus = "ok" | "warn" | "fail";
+
+type EffectRecord = {
+  id: string;
+  status: "committed";
+  operation_id: string;
+  revision_at_commit: number;
+  record: Record<string, unknown>;
+};
+
+type Observation = {
+  evidence_id: string;
+  observed_revision: number;
+  payload: Record<string, unknown>;
+};
 
 export type TraceEntry = {
   step: DirectionStep;
@@ -171,27 +187,89 @@ export function createRecording(result: ComparisonResult, frameDurationMs = 900)
 
 export class SuiteToolRuntime {
   private revision = 1;
-  private effects = new Map<string, { id: string; status: "committed" }>();
+  private effects = new Map<string, EffectRecord>();
+  private observations = new Map<string, Map<string, Observation>>();
 
   reset(): void {
     this.revision = 1;
     this.effects.clear();
+    this.observations.clear();
+  }
+
+  effectCount(): number {
+    return this.effects.size;
+  }
+
+  private bucket(useCaseId: string): Map<string, Observation> {
+    let map = this.observations.get(useCaseId);
+    if (!map) {
+      map = new Map();
+      this.observations.set(useCaseId, map);
+    }
+    return map;
   }
 
   execute(useCase: UseCase, toolName: string, args: Record<string, unknown>) {
     const tool = useCase.tools.find((item) => item.name === toolName);
-    if (!tool) return { ok: false, error: "unknown_tool" };
+    if (!tool) {
+      return { ok: false, error: "unknown_tool", effect_count: this.effects.size };
+    }
 
-    if (tool.readOnly) {
-      const operationId = typeof args.operation_id === "string" ? args.operation_id : null;
+    const toolId = `${useCase.id}.${toolName}`;
+    const contract = getSuiteToolContract(toolId);
+    const role = tool.role ?? (tool.readOnly ? "inspect" : "act");
+
+    if (role === "discover" || role === "inspect") {
+      const evidenceId = tool.producesEvidence ?? `${useCase.id}.${toolName}`;
+      const payload = {
+        evidence_id: evidenceId,
+        observed_revision: this.revision,
+        revision: this.revision,
+        use_case: useCase.id,
+        ...(tool.observation ?? {}),
+        simulated: true,
+      };
+      this.bucket(useCase.id).set(evidenceId, {
+        evidence_id: evidenceId,
+        observed_revision: this.revision,
+        payload,
+      });
+      return { ok: true, data: payload };
+    }
+
+    if (role === "reconcile") {
+      const operationId = typeof args.operation_id === "string" ? args.operation_id : "";
+      if (!operationId) {
+        const structured_failure = buildStructuredFailure({
+          category: "invalid_input_or_precondition",
+          tool: toolId,
+          expected: "operation_id",
+          actual: "missing_operation_id",
+          owner: "reliability_boundary",
+          recoverability: "automatic",
+          state_revision: this.revision,
+          evidence: ["reconcile_requires_operation_id"],
+        });
+        return {
+          ok: false,
+          error: "invalid_precondition",
+          category: "invalid_input_or_precondition",
+          allowed_next_action: "reconcile",
+          effect_count: this.effects.size,
+          structured_failure,
+        };
+      }
+      const effect = this.effects.get(operationId) ?? null;
       return {
         ok: true,
         data: {
-          use_case: useCase.id,
-          object: useCase.objectLabel,
-          revision: this.revision,
           operation_id: operationId,
-          effect: operationId ? this.effects.get(operationId) ?? null : null,
+          authority: effect ? "authoritative" : "unavailable",
+          effect,
+          effect_id: effect?.id ?? null,
+          record: effect?.record ?? null,
+          effect_count: this.effects.size,
+          revision: this.revision,
           simulated: true,
         },
       };
@@ -200,31 +278,91 @@ export class SuiteToolRuntime {
     const operationId = typeof args.operation_id === "string" ? args.operation_id : "";
     const expectedRevision = Number(args.expected_revision);
     if (!operationId || !Number.isInteger(expectedRevision)) {
-      return { ok: false, error: "contract_violation", allowed_next_action: "stop" };
+      return {
+        ok: false,
+        error: "contract_violation",
+        category: "invalid_input_or_precondition",
+        allowed_next_action: "stop",
+        effect_count: this.effects.size,
+      };
     }
+
+    // D1: same operation_id reuses the committed record before any stale/missing checks.
+    const existing = this.effects.get(operationId);
+    if (existing) {
+      return {
+        ok: true,
+        data: {
+          ...existing,
+          duplicate_prevented: true,
+          effect_count: this.effects.size,
+          revision: this.revision,
+          simulated: true,
+        },
+      };
+    }
+
+    const required = tool.requiresEvidence ?? contract?.required_states ?? [];
+    const missing = required.filter((key) => {
+      const observed = this.bucket(useCase.id).get(key);
+      return !observed || observed.observed_revision !== this.revision;
+    });
+    if (missing.length > 0) {
+      const nextTool = producerOf(useCase.id, missing[0]!) ?? `${useCase.id}.observe`;
+      const structured_failure = buildStructuredFailure({
+        category: "invalid_input_or_precondition",
+        tool: toolId,
+        expected: required.join("+"),
+        actual: `missing:${missing.join(",")}`,
+        owner: "reliability_boundary",
+        recoverability: "automatic",
+        state_revision: this.revision,
+        operation_id: operationId,
+        evidence: ["required_states", ...missing],
+      });
+      return {
+        ok: false,
+        error: "invalid_precondition",
+        category: "invalid_input_or_precondition",
+        missing_evidence: missing,
+        allowed_next_action: "observe",
+        next_tool: nextTool,
+        effect_count: this.effects.size,
+        structured_failure,
+      };
+    }
+
     if (expectedRevision !== this.revision) {
       return {
         ok: false,
         error: "stale_revision",
+        category: "stale_capability_or_state",
         expected_revision: expectedRevision,
         actual_revision: this.revision,
         allowed_next_action: "reobserve",
+        effect_count: this.effects.size,
       };
     }
-    const existing = this.effects.get(operationId);
-    if (existing) {
-      return { ok: true, data: { ...existing, duplicate_prevented: true, simulated: true } };
-    }
-    const effect = { id: `${useCase.id}_${this.effects.size + 1}`, status: "committed" as const };
+
+    const effect: EffectRecord = {
+      id: `${useCase.id}_${this.effects.size + 1}`,
+      status: "committed",
+      operation_id: operationId,
+      revision_at_commit: this.revision,
+      record: { ...useCase.effectRecord, operation_id: operationId },
+    };
     this.effects.set(operationId, effect);
     this.revision += 1;
     return {
       ok: true,
       data: {
-        ...effect,
+        id: effect.id,
+        effect_id: effect.id,
+        status: effect.status,
         operation_id: operationId,
         revision: this.revision,
         effect_count: this.effects.size,
+        record: effect.record,
         simulated: true,
       },
     };
