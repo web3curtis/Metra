@@ -37,10 +37,13 @@ difference is whether Metra's boundary sits in front of the handlers.
 | acts before gathering required evidence | 0 | **1 committed** | 0, blocked |
 | retries after an unclear response | 1 | **2 committed** | 1 |
 | acts again on evidence that has gone stale | 1 | **2 committed** | 1 |
+| is told the site committed something it did not | 0 | **told 1 exists** | 0, refused |
 
 Raw WebMCP is not broken here. It is doing exactly what it was asked to do — which
 is the point. A `create_support_ticket` tool has nowhere to record that help must
-be searched first, so it commits.
+be searched first, so it commits. In the last row nothing commits in either lane;
+the difference is that raw WebMCP repeats the handler's claim, and an agent acting
+on that believes a ticket exists when none does.
 
 Full transcripts: [`docs/comparisons/raw-vs-prototype.md`](docs/comparisons/raw-vs-prototype.md),
 regenerated on every test run by `tests/rawVsPrototype.test.ts`.
@@ -160,7 +163,7 @@ npm run dev     # open the printed URL; toggle mechanisms A–D2 live
 ```
 
 ```bash
-npm test        # 152 tests, including the live registered-path falsifiers
+npm test        # 165 tests, including the live registered-path falsifiers
 npm run build
 ```
 
