@@ -9,6 +9,8 @@
       "correct": false,
       "blocked_calls": 0,
       "offered_next_action": null,
+      "reported_effects": 1,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.create_support_ticket",
@@ -23,6 +25,8 @@
       "correct": true,
       "blocked_calls": 1,
       "offered_next_action": "observe -> support.search_help",
+      "reported_effects": 0,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.create_support_ticket",
@@ -42,6 +46,8 @@
       "correct": false,
       "blocked_calls": 0,
       "offered_next_action": null,
+      "reported_effects": 2,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.search_help",
@@ -71,6 +77,8 @@
       "correct": true,
       "blocked_calls": 1,
       "offered_next_action": "reconcile -> support.get_support_ticket",
+      "reported_effects": 1,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.search_help",
@@ -105,6 +113,8 @@
       "correct": false,
       "blocked_calls": 0,
       "offered_next_action": null,
+      "reported_effects": 2,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.search_help",
@@ -139,6 +149,8 @@
       "correct": true,
       "blocked_calls": 1,
       "offered_next_action": "reobserve -> support.search_help",
+      "reported_effects": 1,
+      "misreported": false,
       "transcript": [
         {
           "tool": "support.search_help",
@@ -164,6 +176,63 @@
           "tool": "support.create_support_ticket",
           "ok": false,
           "note": "stale_precondition (effects=1)"
+        }
+      ]
+    }
+  },
+  {
+    "scenario_id": "S4",
+    "title": "The site's handler reports a success it never performed",
+    "correct_effect_count": 0,
+    "raw": {
+      "lane": "raw",
+      "effect_count": 0,
+      "correct": true,
+      "blocked_calls": 0,
+      "offered_next_action": null,
+      "reported_effects": 1,
+      "misreported": true,
+      "transcript": [
+        {
+          "tool": "support.search_help",
+          "ok": true,
+          "note": "effects=0"
+        },
+        {
+          "tool": "support.get_customer_context",
+          "ok": true,
+          "note": "effects=0"
+        },
+        {
+          "tool": "support.create_support_ticket",
+          "ok": true,
+          "note": "effects=0"
+        }
+      ]
+    },
+    "prototype": {
+      "lane": "prototype",
+      "effect_count": 0,
+      "correct": true,
+      "blocked_calls": 1,
+      "offered_next_action": "reconcile -> support.get_support_ticket",
+      "reported_effects": 0,
+      "misreported": false,
+      "transcript": [
+        {
+          "tool": "support.search_help",
+          "ok": true,
+          "note": "effects=0"
+        },
+        {
+          "tool": "support.get_customer_context",
+          "ok": true,
+          "note": "effects=0"
+        },
+        {
+          "tool": "support.create_support_ticket",
+          "ok": false,
+          "note": "unverified_effect (effects=0)"
         }
       ]
     }
