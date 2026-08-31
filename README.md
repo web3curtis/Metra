@@ -72,12 +72,15 @@ One legal next action, named. Zero effects. The domain handler was never reached
 The boundary is worth exactly as much as its assumptions, so they are stated
 plainly rather than buried.
 
-**A response is not an observation.** Success, failure, and exceptions from a
-consequential call are all treated as claims. Only the site's reconcile tool can
+**A response is not an observation.** Success, failure, exceptions, and promises
+that have not settled are all treated as claims. Only the site's reconcile tool can
 say whether an effect exists, and it must answer completely: authoritative, with
 an explicit `committed` or `absent` resolution, a matching record, an integer
 revision, and a count. Anything partial or self-contradictory is read as *unknown*,
 which is reported as an ambiguous effect rather than resolved in either direction.
+The same reading applies whether the boundary verifies an effect itself or a
+caller invokes the reconcile tool directly, so an answer that would be refused in
+one place is never believed in the other.
 
 **It trusts the site's own reconcile tool as authority.** A handler that claims
 success without doing anything is caught, because the claim and the record
@@ -87,12 +90,19 @@ lying handler can no longer convince an agent, and any disagreement between a
 handler and authority is reported rather than smoothed over.
 
 **"One legal next action" is about consequential calls.** After a refusal, the
-boundary names the one tool that can make progress and refuses further
+boundary names the one tool that can make progress — an action it demands is
+always backed by a tool the caller can actually call — and refuses further
 consequential dispatch until the obligation is discharged. It does not freeze the
-page — unrelated read-only tools still answer, which is what lets an agent gather
+page: unrelated read-only tools still answer, which is what lets an agent gather
 the evidence it was told to gather. When reconciliation cannot resolve an effect,
-the obligation is *not* discharged: the run escalates rather than retrying, because
-an unknown effect is worse than a stalled one.
+the obligation is *not* discharged; the run stops rather than retrying, because an
+unknown effect is worse than a stalled one.
+
+**Nothing leaves the boundary except an envelope.** One call runs at a time — a
+tool that calls back into the boundary mid-call is refused rather than allowed to
+interleave two runs through one state machine — and any exception, including a
+defect in the boundary itself, is returned as an ambiguous-effect envelope naming
+a next action. A caller never has to interpret a stack trace.
 
 **"Exactly once" is declared, not assumed.** Each consequential tool carries an
 `effect_budget` — one, for every task in this suite. Once it is spent, no amount of
@@ -150,7 +160,7 @@ npm run dev     # open the printed URL; toggle mechanisms A–D2 live
 ```
 
 ```bash
-npm test        # 148 tests, including the live registered-path falsifiers
+npm test        # 152 tests, including the live registered-path falsifiers
 npm run build
 ```
 
@@ -175,8 +185,7 @@ All six appear in a single live trace from the registered path
 (`tests/liveBoundary.test.ts`), not in six separate unit tests.
 
 Every defect found by independent review is pinned by a regression named after it:
-`tests/round3Regressions.test.ts`, `tests/round4Regressions.test.ts`, and
-`tests/round5Regressions.test.ts`.
+`tests/round3Regressions.test.ts` through `tests/round6Regressions.test.ts`.
 
 ## Layout
 

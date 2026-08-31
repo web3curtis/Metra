@@ -155,9 +155,14 @@ describe("round-3 assessment regressions", () => {
     expect(externalEffects).toBe(1);
 
     const reconcile = call("support.get_support_ticket", { operation_id: "r3-real-one" });
-    expect(reconcile.ok).toBe(true);
-    // An unresolved answer escalates rather than discharging the obligation.
-    expect(registration.protocol.snapshot().decision?.action).toBe("escalate");
+    // Authority did not answer, so the caller is told that plainly rather than
+    // handed a success envelope that resolves nothing.
+    expect(reconcile.ok).toBe(false);
+    expect(reconcile.error).toBe("unreadable_authority");
+    // The obligation is not discharged. With no authority left to appeal to, the
+    // run is stopped for a human rather than retried.
+    expect(registration.protocol.snapshot().decision?.action).toBe("stop");
+    expect((reconcile.structured_failure as Record<string, unknown>).recoverability).toBe("manager");
 
     observeSupport(call);
     const second = call("support.create_support_ticket", { operation_id: "r3-real-two", expected_revision: 1 });
