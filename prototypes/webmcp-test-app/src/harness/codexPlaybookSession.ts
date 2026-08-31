@@ -177,7 +177,7 @@ export function runCodexPlaybookSession(options: {
           ),
         })
       : {
-          action: "retry" as const,
+          action: "retry_safe" as const,
           rationale: "playbook disabled — naive retry",
           from_critiqor_playbook: false,
         };
@@ -213,7 +213,7 @@ export function runCodexPlaybookSession(options: {
     } else if (step.action === "stop" || step.action === "escalate" || step.action === "inspect_evidence") {
       playbook.halted = true;
       // Explicitly do not blind-retry
-    } else if (step.action === "retry") {
+    } else if (step.action === "retry_safe") {
       playbook.blind_retry_attempted = true;
       playbook.followed = false;
       purchase = call("purchase_tickets", { operation_id: `${opId}_retry` });

@@ -1,12 +1,35 @@
-# Metra / ReliableRail WebMCP Sandbox
+<p align="center">
+  <img src="assets/metra-logo.png" alt="Metra logo" width="120" />
+</p>
 
-Implementation-only repository for the ReliableRail WebMCP reliability prototype.
+<h1 align="center">Metra</h1>
 
-## What this is
+<p align="center">
+  <strong>Maturing WebMCP</strong>
+</p>
 
-A **Vite + TypeScript** web app that exposes simulated rail-booking **WebMCP tools**, plus a switchable **reliability boundary** (contract, freshness, structured failures, diagnosis, effect safety, state recovery).
+<p align="center">
+  Benchmark. Evaluate. Evolve.
+</p>
 
-Implementations **A–D2** are intended to meet a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped).
+<p align="center">
+  <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-green">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6">
+  <img alt="Status" src="https://img.shields.io/badge/status-prototype-blue">
+  <a href="https://web3curtis.github.io/Metra/"><img alt="Live demo" src="https://img.shields.io/badge/demo-GitHub%20Pages-0ea5e9"></a>
+</p>
+
+<p align="center">
+  <code>cd prototypes/webmcp-test-app && npm install && npm run dev</code>
+</p>
+
+Implementation-only repository for the ReliableRail WebMCP reliability prototype: simulated rail-booking **WebMCP tools** plus a switchable **reliability boundary** (contract, freshness, structured failures, diagnosis, effect safety, state recovery).
+
+Purchase is **simulated only** — no payments, no real tickets.
+
+Live judge demo: https://web3curtis.github.io/Metra/
+
+---
 
 ## Surfaces
 
@@ -14,21 +37,15 @@ Implementations **A–D2** are intended to meet a five-criterion bar (struggle m
 |---|---|
 | **Booking platform** | Syd–CBR ticket mimic + adversities + full A–D2 battery |
 | **Lab** | Mechanism flags, tools, per-adversity side-by-side |
+| **WorkBoard** | Cross-domain portability demo (`prototypes/workboard-webmcp-app/`) |
 
-Live: https://web3curtis.github.io/Metra/
+## What ships
 
-## Quality
+Implementations **A–D2** target a five-criterion bar (struggle mapped, mechanism shipped, stress proven, agent-usable, plugin-shaped), with a shared protocol spine and proof suites under `prototypes/webmcp-test-app/tests/`.
 
-5/5 = multi-adversity battery on ReliableRail (see local `summary/FIVE_FIVE_FOR_CODEX.md` when provided). Plugin: `.codex-plugin/` + `skills/webmcp-reliability/`.
-
+The repository root is a Codex-compatible plugin (`.codex-plugin/plugin.json`) with universal agent instructions in `skills/webmcp-reliability/`.
 
 ## Quick start
-
-Live judge demo: https://web3curtis.github.io/Metra/
-
-The repository root is also a Codex-compatible plugin. Its manifest is
-`.codex-plugin/plugin.json`, and the universal agent instructions are under
-`skills/webmcp-reliability/`.
 
 ```bash
 cd prototypes/webmcp-test-app
@@ -48,11 +65,13 @@ npm run build
 | Path | Role |
 |---|---|
 | `prototypes/webmcp-test-app/` | Public WebMCP sandbox app + harness |
-| `prototypes/reliability-boundary/` | A–D2 mechanism modules |
+| `prototypes/reliability-boundary/` | A–D2 mechanism modules + protocol spine |
+| `prototypes/workboard-webmcp-app/` | Cross-domain WorkBoard WebMCP demo |
 | `adapters/critiqor/` | Optional one-way Critiqor event export |
 | `configurations/` | Fixtures, agent profiles, experiment Mode JSON |
 | `harness/` | Runner ownership notes |
-| `skills/webmcp-reliability/` | Universal agent skill (instruct agents to follow reliability rules) |
+| `skills/webmcp-reliability/` | Universal agent skill |
+| `assets/` | Brand logo and banner |
 
 ## License
 

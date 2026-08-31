@@ -36,6 +36,63 @@ export function newOperationId(prefix = "op"): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export function intentFingerprint(input: {
+  tool: string;
+  args: Record<string, unknown>;
+  state_revision: number;
+  contract_version?: string;
+}): string {
+  const keys = Object.keys(input.args).sort();
+  const normalized: Record<string, unknown> = {};
+  for (const key of keys) normalized[key] = input.args[key];
+  const raw = `${input.tool}|${input.contract_version ?? ""}|${input.state_revision}|${JSON.stringify(normalized)}`;
+  let h = 0;
+  for (let i = 0; i < raw.length; i += 1) h = (h * 33 + raw.charCodeAt(i)) >>> 0;
+  return `intent_${h.toString(16)}`;
+}
+
+export type EffectJournalEntry = {
+  sequence: number;
+  at_ms: number;
+  operation_id: string;
+  intent_fingerprint: string;
+  tool: string;
+  phase: EffectPhase;
+  note?: string;
+};
+
+export class EffectJournal {
+  private entries: EffectJournalEntry[] = [];
+  private sequence = 0;
+
+  append(entry: Omit<EffectJournalEntry, "sequence">): EffectJournalEntry {
+    this.sequence += 1;
+    const full = { ...entry, sequence: this.sequence };
+    this.entries.push(full);
+    return full;
+  }
+
+  all(): EffectJournalEntry[] {
+    return [...this.entries];
+  }
+
+  latestFor(operation_id: string): EffectJournalEntry | null {
+    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
+      if (this.entries[i]?.operation_id === operation_id) return this.entries[i]!;
+    }
+    return null;
+  }
+
+  conflictOnReuse(input: {
+    operation_id: string;
+    intent_fingerprint: string;
+  }): boolean {
+    const prior = this.latestFor(input.operation_id);
+    if (!prior) return false;
+    return prior.intent_fingerprint !== input.intent_fingerprint;
+  }
+}
+
 export function beginEffect(input: {
   operation_id: string;
   tool: string;

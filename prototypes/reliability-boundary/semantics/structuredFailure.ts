@@ -57,44 +57,50 @@ export function envelopeFromToolError(input: {
   error: string;
   state: string;
   state_revision: number;
+  operation_id?: string;
 }): StructuredFailure {
-  if (input.error === "contract_violation") {
+  if (input.error === "contract_violation" || input.error === "contract_output_violation") {
     return buildStructuredFailure({
       category: "invalid_input_or_precondition",
       tool: input.tool,
-      expected: "ORDER_REVIEWED_and_contract_ok",
+      expected: "contract_ok",
       actual: input.state,
       owner: "reliability_boundary",
       recoverability: "non_recoverable",
       state_revision: input.state_revision,
-      evidence: ["contract_v0_validateCall"],
+      operation_id: input.operation_id,
+      evidence: ["contract_validate"],
     });
   }
-  if (input.error === "stale_capability_epoch") {
+  if (input.error === "stale_capability_epoch" || input.error === "stale_dependency" || input.error === "missing_epoch") {
     return buildStructuredFailure({
       category: "stale_observation_or_capability",
       tool: input.tool,
-      expected: "matching_capability_epoch",
-      actual: "epoch_mismatch",
+      expected: "fresh_dependencies",
+      actual: input.error,
       owner: "reliability_boundary",
       recoverability: "automatic",
       state_revision: input.state_revision,
-      evidence: ["capability_freshness_rejectStaleConsequential", "required_action:reobserve"],
+      operation_id: input.operation_id,
+      evidence: ["freshness_evaluate"],
     });
   }
   if (
     input.error === "purchase_timeout_unknown" ||
-    input.error === "ambiguous_commit"
+    input.error === "Error" ||
+    input.error === "timeout" ||
+    input.error.includes("timeout")
   ) {
     return buildStructuredFailure({
       category: "ambiguous_commit",
       tool: input.tool,
-      expected: "confirmed_commit_or_absent",
-      actual: input.error,
-      owner: "session",
+      expected: "authoritative_commit_status",
+      actual: "client_timeout_or_opaque_error",
+      owner: "network",
       recoverability: "automatic",
       state_revision: input.state_revision,
-      evidence: ["client_timeout_after_possible_commit", "required_action:reconcile"],
+      operation_id: input.operation_id,
+      evidence: ["raw_timeout_or_opaque", "effect_may_have_committed"],
     });
   }
   return buildStructuredFailure({
@@ -105,6 +111,7 @@ export function envelopeFromToolError(input: {
     owner: "unknown",
     recoverability: "unknown",
     state_revision: input.state_revision,
+    operation_id: input.operation_id,
     evidence: ["raw_tool_error"],
   });
 }

@@ -1,4 +1,8 @@
 import type { ToolResult } from "../domain/types.ts";
+import {
+  ProtocolRunContext,
+  wrapRegisteredToolExecute,
+} from "../../../reliability-boundary/spine/protocolSpine.ts";
 import { TOOL_INPUT_SCHEMAS } from "./toolSchemas.ts";
 
 type ToolHandler = (args: Record<string, unknown>) => ToolResult | Promise<ToolResult>;
@@ -40,10 +44,19 @@ export async function normalizeHandlerResult(
   }
 }
 
-/** Register tools when document.modelContext is present; forwards all args. */
+const READ_ONLY_TOOLS = new Set([
+  "search_journeys",
+  "list_available_seats",
+  "review_order",
+  "get_order",
+]);
+
+/** Register tools when document.modelContext is present; forwards all args via protocol spine. */
 export function registerReliableRailTools(
   invoke: (name: string, args: Record<string, unknown>) => ToolResult | Promise<ToolResult>,
-): { registered: string[]; lane: WebMcpLane; detail: string } {
+  options: { protocol?: ProtocolRunContext } = {},
+): { registered: string[]; lane: WebMcpLane; detail: string; protocol: ProtocolRunContext } {
+  const protocol = options.protocol ?? new ProtocolRunContext();
   const tools: Record<string, ToolHandler> = {
     search_journeys: (args) => invoke("search_journeys", args ?? {}),
     select_journey: (args) => invoke("select_journey", args ?? {}),
@@ -72,6 +85,7 @@ export function registerReliableRailTools(
       registered: [],
       lane: "unavailable",
       detail: "document.modelContext.registerTool unavailable — UI-only until WebMCP-enabled Chrome",
+      protocol,
     };
   }
 
@@ -88,18 +102,45 @@ export function registerReliableRailTools(
   };
 
   for (const name of names) {
+    const handler = tools[name]!;
     doc.modelContext.registerTool({
       name,
       description: descriptions[name] ?? name,
       inputSchema: TOOL_INPUT_SCHEMAS[name] ?? { type: "object" },
-      execute: async (args) =>
-        normalizeHandlerResult(() => tools[name]?.(args ?? {}) ?? { ok: false, error: "missing_handler" }),
+      execute: wrapRegisteredToolExecute(
+        name,
+        (args) => {
+          try {
+            const out = handler(args ?? {});
+            // Registration path stays sync for spine tests and booking UI.
+            // Async rejection still goes through normalizeHandlerResult when callers use it.
+            if (out && typeof (out as PromiseLike<ToolResult>).then === "function") {
+              throw new Error("async_handler_not_supported_in_spine_wrap");
+            }
+            return out ?? { ok: false, error: "missing_handler" };
+          } catch (err) {
+            const message =
+              err instanceof Error
+                ? err.message
+                : typeof err === "string"
+                  ? err
+                  : "handler_threw";
+            return { ok: false, error: message };
+          }
+        },
+        protocol,
+        {
+          readOnly: READ_ONLY_TOOLS.has(name),
+          isReconcileTool: name === "get_order",
+        },
+      ),
     });
   }
 
   return {
     registered: names,
     lane: "native",
-    detail: `Registered ${names.length} tools on document.modelContext (concrete schemas; args forwarded)`,
+    detail: `Registered ${names.length} tools on document.modelContext via shared protocol spine`,
+    protocol,
   };
 }

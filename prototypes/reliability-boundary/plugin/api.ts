@@ -22,12 +22,6 @@ export {
   type DiagnosisDecision,
 } from "../diagnosis/diagnosisPolicy.ts";
 export {
-  applyDiagnosisDecision,
-  allowConsequentialCall,
-  createDiagnosisGate,
-  type DiagnosisGateState,
-} from "../diagnosis/diagnosisExecutor.ts";
-export {
   beginEffect,
   markCommitted,
   markUnknown,
@@ -43,6 +37,40 @@ export {
   type RecoveryDecision,
   type ObservedRuntime,
 } from "../recovery/stateRecovery.ts";
+export {
+  createVerifiedCheckpoint,
+  verifyCheckpointIntegrity,
+  recoverFromInterruption,
+  type VerifiedCheckpoint,
+} from "../recovery/checkpoint.ts";
+export {
+  normalizeOutcome,
+  type NormalizedOutcome,
+  type OutcomeKind,
+} from "../semantics/normalizeOutcome.ts";
+export {
+  evaluateFreshness,
+  classifyDriftRelevance,
+  type FreshnessSnapshot,
+  type DriftEvent,
+} from "../freshness/capabilityFreshness.ts";
+export {
+  intentFingerprint,
+  EffectJournal,
+  type EffectJournalEntry,
+} from "../effect/effectSafety.ts";
+export {
+  ProtocolRunContext,
+  wrapRegisteredToolExecute,
+  redactPayload,
+  SPINE_CONTRACT_VERSION,
+  type ProtocolPhase,
+  type OperationPhase,
+  type RecoveryPhase,
+  type DecisionAction,
+  type ProtocolIdentities,
+  type TelemetryEvent,
+} from "../spine/protocolSpine.ts";
 
 export const PLUGIN_ID = "webmcp-reliability-boundary";
 export const PLUGIN_VERSION = "1.0.0";

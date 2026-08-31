@@ -48,10 +48,15 @@ export function applyDiagnosisDecision(
         must_reconcile_before_retry: false,
         must_reobserve_before_retry: true,
       };
-    case "retry":
+    case "retry_safe":
+    case "recover":
+    case "continue":
       return {
         ...gate,
         last_action: action,
+        consequential_blocked: false,
+        must_reconcile_before_retry: false,
+        must_reobserve_before_retry: false,
       };
     default: {
       const _exhaustive: never = action;

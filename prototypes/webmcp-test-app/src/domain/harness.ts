@@ -16,6 +16,7 @@ import {
   rejectDuplicateOperation,
   type EffectRecord,
 } from "../../../reliability-boundary/effect/effectSafety.ts";
+import type { ProtocolRunContext } from "../../../reliability-boundary/spine/protocolSpine.ts";
 
 export type RuntimeEvent = {
   sequence: number;
@@ -86,6 +87,8 @@ export function invokeTool(
     diagnosisPolicy?: boolean;
     effectSafety?: boolean;
     effectRegistry?: Map<string, EffectRecord>;
+    /** Shared spine context — when set, C2/D2 decisions block consequential dispatch. */
+    protocol?: ProtocolRunContext;
     /** Adversity: timeout after may-have-committed without local confirm */
     simulatePurchaseTimeoutUnknown?: boolean;
     /** Adversity: server committed but client only sees timeout */
@@ -96,6 +99,35 @@ export function invokeTool(
     actualCapabilityEpoch?: string;
   } = {},
 ): ToolResult {
+  const READ_ONLY = new Set<ToolName>([
+    "search_journeys",
+    "list_available_seats",
+    "review_order",
+    "get_order",
+    "reset_fixture",
+  ]);
+  const protocol = options.protocol;
+  if (protocol) {
+    const gate = protocol.assertDispatchAllowed({
+      tool: name,
+      readOnly: READ_ONLY.has(name),
+      isReconcileTool: name === "get_order",
+    });
+    if (!gate.ok) {
+      recorder.record({
+        component: "harness",
+        stage,
+        event_type: "decision_block",
+        payload: { tool: name, code: gate.code, action: gate.action },
+      });
+      return {
+        ok: false,
+        error: gate.code,
+        data: { decision_action: gate.action, tool: name },
+      };
+    }
+  }
+
   const finish = (result: ToolResult, extraPayload: Record<string, unknown> = {}): ToolResult => {
     let out = result;
     if (options.structuredSemantics && !out.ok && out.error) {
@@ -117,8 +149,30 @@ export function invokeTool(
           structuredFailure: envelope as StructuredFailure,
         });
         data = { ...data, diagnosis_action: decision };
+        protocol?.setDecision({
+          action:
+            decision.action === "retry_safe"
+              ? "retry_safe"
+              : decision.action === "reobserve"
+                ? "reobserve"
+                : decision.action === "reconcile"
+                  ? "reconcile"
+                  : decision.action === "recover"
+                    ? "recover"
+                    : decision.action === "continue"
+                      ? "continue"
+                      : decision.action === "stop"
+                        ? "stop"
+                        : "escalate",
+          reason_code: envelope.category,
+          evidence_refs: decision.evidence,
+        });
       }
       out = { ...out, data };
+    }
+    if (out.ok && protocol) {
+      if (READ_ONLY.has(name) && name !== "get_order") protocol.noteSuccessfulObserve();
+      if (name === "get_order") protocol.noteSuccessfulReconcile();
     }
     const structuredFailure =
       options.structuredSemantics && out.data && typeof out.data === "object"
@@ -232,23 +286,6 @@ export function invokeTool(
       result = store.reviewOrder();
       break;
     case "purchase_tickets": {
-      // Shared adversity: commit then client-timeout — works with OR without D1
-      if (options.simulateClientTimeoutAfterCommit && !options.effectSafety) {
-        const committed = store.purchaseTickets();
-        if (committed.ok) {
-          result = {
-            ok: false,
-            error: "purchase_timeout_unknown",
-            data: {
-              note: "Client timeout after possible commit (raw/control path)",
-              prior: committed.data,
-            },
-          };
-        } else {
-          result = committed;
-        }
-        break;
-      }
       if (options.effectSafety) {
         const registry = options.effectRegistry ?? new Map<string, EffectRecord>();
         const operationId =
@@ -344,6 +381,23 @@ export function invokeTool(
             },
           };
         }
+      } else if (options.simulateClientTimeoutAfterCommit) {
+        // Apparatus-only raw-lane injector: commit may occur while the client
+        // only sees an opaque timeout/Error (mechanisms A–D2 remain off).
+        const committed = store.purchaseTickets();
+        if (committed.ok) {
+          result = {
+            ok: false,
+            error: "Error",
+            data: {
+              note: "raw_client_timeout_after_possible_commit",
+              authority: "unavailable",
+              commit_status: "possible",
+            },
+          };
+        } else {
+          result = committed;
+        }
       } else {
         result = store.purchaseTickets();
       }
@@ -384,7 +438,13 @@ export function invokeTool(
   }
 
   if (options.contractConformance) {
-    const outGate = validateOutput({ tool: name, ok: result.ok, data: result.data });
+    const orderAfter = store.getOrder();
+    const outGate = validateOutput({
+      tool: name,
+      ok: result.ok,
+      data: result.data,
+      state_after: orderAfter.state,
+    });
     if (!outGate.ok) {
       result = {
         ok: false,

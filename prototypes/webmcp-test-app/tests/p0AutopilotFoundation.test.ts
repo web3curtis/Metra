@@ -107,7 +107,8 @@ describe("P0 shared timeout adversity (fair arms)", () => {
       effectSafety: false,
     });
     expect(r.ok).toBe(false);
-    expect(r.error).toBe("purchase_timeout_unknown");
+    // Raw lane stays opaque (apparatus injector); treatment maps via C1/D1.
+    expect(r.error).toBe("Error");
     expect(store.getOrder().committed_purchase_count).toBe(1);
   });
 });

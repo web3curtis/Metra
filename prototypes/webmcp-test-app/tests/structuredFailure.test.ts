@@ -72,9 +72,7 @@ describe("structured failure semantics", () => {
       structured_failure?: { category: string; evidence: string[] };
     };
     expect(data.structured_failure?.category).toBe("stale_observation_or_capability");
-    expect(data.structured_failure?.evidence).toContain(
-      "capability_freshness_rejectStaleConsequential",
-    );
+    expect(data.structured_failure?.evidence).toContain("freshness_evaluate");
   });
 
   it("attaches diagnosis_action when C2 policy on", () => {

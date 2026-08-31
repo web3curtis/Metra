@@ -1,15 +1,17 @@
 /**
  * C2 — evidence-backed diagnosis policy.
- * Selects retry | reobserve | reconcile | escalate | stop from C1 envelopes
- * and optional Critiqor diagnosis. Does not rewrite raw events.
+ * Selects continue | retry_safe | reobserve | reconcile | recover | escalate | stop
+ * from C1 envelopes. Critiqor is non-authoritative fallback only.
  */
 
 import type { StructuredFailure } from "../semantics/structuredFailure.ts";
 
 export type DiagnosisAction =
-  | "retry"
+  | "continue"
+  | "retry_safe"
   | "reobserve"
   | "reconcile"
+  | "recover"
   | "escalate"
   | "stop";
 
@@ -29,6 +31,31 @@ export type DiagnosisDecision = {
   critiqor_used: boolean;
 };
 
+export type DiagnosisBudgets = {
+  reobserve: number;
+  reconcile: number;
+  recover: number;
+  retry_safe: number;
+};
+
+const DEFAULT_BUDGETS: DiagnosisBudgets = {
+  reobserve: 3,
+  reconcile: 3,
+  recover: 2,
+  retry_safe: 1,
+};
+
+/** Precedence: escalate/stop > reconcile > reobserve/recover > retry_safe > continue */
+const PRECEDENCE: DiagnosisAction[] = [
+  "escalate",
+  "stop",
+  "reconcile",
+  "reobserve",
+  "recover",
+  "retry_safe",
+  "continue",
+];
+
 function actionFromCategory(category: string): DiagnosisAction | null {
   switch (category) {
     case "stale_observation_or_capability":
@@ -39,6 +66,8 @@ function actionFromCategory(category: string): DiagnosisAction | null {
       return "reconcile";
     case "execution_error":
       return "escalate";
+    case "malformed_success":
+      return "stop";
     default:
       return null;
   }
@@ -65,85 +94,92 @@ function actionFromRecoverability(
   }
 }
 
-/**
- * Map Critiqor prose recommendation into a bounded action when envelope is thin.
- */
 function actionFromCritiqorText(text: string | null | undefined): DiagnosisAction | null {
   if (!text) return null;
   const t = text.toLowerCase();
   if (t.includes("reconcil")) return "reconcile";
-  if (t.includes("retry")) return "retry";
+  if (t.includes("recover")) return "recover";
+  if (t.includes("retry")) return "retry_safe";
   if (t.includes("stop") || t.includes("abort") || t.includes("unsafe")) return "stop";
   if (t.includes("escalat") || t.includes("inspect") || t.includes("review")) return "escalate";
   if (t.includes("re-observ") || t.includes("reobserv") || t.includes("refresh") || t.includes("rediscover"))
     return "reobserve";
+  if (t.includes("continue")) return "continue";
   return null;
+}
+
+function withinBudget(
+  action: DiagnosisAction,
+  used: Partial<DiagnosisBudgets>,
+  budgets: DiagnosisBudgets,
+): boolean {
+  if (action === "reobserve") return (used.reobserve ?? 0) < budgets.reobserve;
+  if (action === "reconcile") return (used.reconcile ?? 0) < budgets.reconcile;
+  if (action === "recover") return (used.recover ?? 0) < budgets.recover;
+  if (action === "retry_safe") return (used.retry_safe ?? 0) < budgets.retry_safe;
+  return true;
 }
 
 export function selectDiagnosisAction(input: {
   structuredFailure?: StructuredFailure | null;
   critiqorDiagnosis?: CritiqorDiagnosisLite | null;
+  budgets_used?: Partial<DiagnosisBudgets>;
+  budgets?: DiagnosisBudgets;
 }): DiagnosisDecision {
   const evidence: string[] = [];
   const sf = input.structuredFailure ?? null;
   const cq = input.critiqorDiagnosis ?? null;
+  const budgets = input.budgets ?? DEFAULT_BUDGETS;
+  const used = input.budgets_used ?? {};
+
+  const candidates: DiagnosisAction[] = [];
 
   if (sf) {
     evidence.push(`envelope:${sf.category}`, ...sf.evidence);
     const fromCat = actionFromCategory(sf.category);
-    if (fromCat) {
-      return {
-        action: fromCat,
-        rationale: `C1 category ${sf.category} → ${fromCat}`,
-        evidence,
-        critiqor_used: false,
-      };
-    }
-    const fromRec = actionFromRecoverability(sf.recoverability);
-    if (fromRec) {
-      return {
-        action: fromRec,
-        rationale: `C1 recoverability ${sf.recoverability} → ${fromRec}`,
-        evidence,
-        critiqor_used: false,
-      };
+    if (fromCat) candidates.push(fromCat);
+    else {
+      const fromRec = actionFromRecoverability(sf.recoverability);
+      if (fromRec) candidates.push(fromRec);
     }
   }
 
-  if (cq?.primary_diagnosis) {
+  if (candidates.length === 0 && cq?.primary_diagnosis) {
     evidence.push("critiqor.diagnosis.v1");
     const failureType = cq.primary_diagnosis.root_cause_failure_type;
-    if (failureType === "runtime_error") {
-      return {
-        action: "escalate",
-        rationale: "Critiqor runtime_error → escalate",
-        evidence,
-        critiqor_used: true,
-      };
-    }
-    if (failureType === "retry_pressure") {
-      return {
-        action: "stop",
-        rationale: "Critiqor retry_pressure → stop (no blind retry)",
-        evidence,
-        critiqor_used: true,
-      };
-    }
+    if (failureType === "runtime_error") candidates.push("escalate");
+    if (failureType === "retry_pressure") candidates.push("stop");
     const fromText = actionFromCritiqorText(cq.primary_diagnosis.recommended_next_action);
-    if (fromText) {
-      return {
-        action: fromText,
-        rationale: `Critiqor recommendation → ${fromText}`,
-        evidence,
-        critiqor_used: true,
-      };
+    if (fromText) candidates.push(fromText);
+  }
+
+  if (candidates.length === 0) {
+    return {
+      action: "escalate",
+      rationale: "Insufficient evidence for automatic policy; escalate",
+      evidence: evidence.length ? evidence : ["no_envelope_or_critiqor"],
+      critiqor_used: Boolean(cq),
+    };
+  }
+
+  candidates.sort((a, b) => PRECEDENCE.indexOf(a) - PRECEDENCE.indexOf(b));
+  for (const action of candidates) {
+    if (!withinBudget(action, used, budgets)) {
+      evidence.push(`budget_exhausted:${action}`);
+      continue;
     }
+    return {
+      action,
+      rationale: `precedence+budget selected ${action}`,
+      evidence,
+      critiqor_used: Boolean(cq) && !sf,
+    };
   }
 
   return {
-    action: "escalate",
-    rationale: "Insufficient evidence for automatic policy; escalate",
-    evidence: evidence.length ? evidence : ["no_envelope_or_critiqor"],
+    action: "stop",
+    rationale: "All candidate actions exhausted budgets; stop",
+    evidence,
     critiqor_used: Boolean(cq),
   };
 }

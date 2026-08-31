@@ -58,7 +58,7 @@ export function applyCritiqorPlaybook(input: {
       from_critiqor_playbook: true,
     };
   }
-  if (d?.action === "retry") {
+  if (d?.action === "retry_safe") {
     return {
       action: "inspect_evidence",
       rationale: "Critiqor playbook forbids blind retry; inspect evidence first",
