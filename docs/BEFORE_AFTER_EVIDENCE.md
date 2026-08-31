@@ -78,6 +78,51 @@ observation. An instrumented spy confirms the domain handler is **never
 invoked** — the refusal happens before dispatch, so it still holds if the domain
 handler is replaced.
 
+## Correction — the "after" column at `b46227e` was incomplete
+
+An adversarial review of published `main` (`b46227e`) falsified the claim above
+for one call shape that the original evidence did not cover: **reusing a
+committed `operation_id` from a different application**.
+
+`BoundarySession.committed` was keyed on `operation_id` alone even though a
+single session backs every registered tool. Once any application committed under
+`operation_id` X, `phaseOf(X)` returned `"committed"` for every other
+application, which set `alreadyCommitted` and disabled the missing/stale evidence
+gate. `conflictOnReuse` was computed and logged as
+`intent_changed_under_same_operation_id`, but nothing branched on it.
+
+Observed at `b46227e`, driving only registered tools:
+
+| Sequence | Result at `b46227e` | Effects |
+| --- | --- | --- |
+| commerce observe ×2 → `commerce.create_order` (op X) → `commerce.get_order` (op X) → `support.create_support_ticket` (op X) | mechanism B skipped, **domain handler invoked** with zero support observations; surfaced as `malformed_success` only because the domain runtime also refused | 1 |
+| same prefix → `travel.reserve_trip` (op X) | **`ok: true`**, and the envelope carried commerce's order record (`record_type: "order"`, `product_id: "keychron-v6-max"`) under `duplicate_prevented: true` | 1 |
+
+The second row is the worse of the two. The agent is told its trip reservation
+succeeded and handed another application's record. That is a false success, not
+just a missed gate.
+
+`SuiteToolRuntime` had the same defect independently: its effect ledger was also
+keyed on `operation_id` alone, so a cross-application reuse resolved to the wrong
+committed record.
+
+### The fix
+
+- `BoundarySession.committed` and `SuiteToolRuntime`'s effect ledger are keyed by
+  `(use_case_id, operation_id)`. A commit in one application can no longer answer
+  another application's duplicate question.
+- An `operation_id` is now owned by the first consequential tool that binds it. A
+  consequential call reusing an `operation_id` owned by a different tool fails
+  closed with `operation_id_scope_conflict` at D1 — before mechanism B, and
+  before dispatch.
+- Same-application idempotent replay and reconciliation are unchanged, because
+  the owner is the same tool.
+
+`tests/crossUseCaseOperationId.test.ts` pins this: X1 is the exact reported
+sequence, X2 sweeps all 30 ordered application pairs, X3 asserts that legitimate
+same-application idempotent replay still commits exactly once. X1 and X2 fail
+against `b46227e` source and pass after the fix.
+
 ## Reproduce the "after" column
 
 ```bash
@@ -86,6 +131,7 @@ cd Metra/prototypes/webmcp-test-app
 npm ci
 npx vitest run tests/liveBoundary.test.ts      # F0-F7, the falsifier
 npx vitest run tests/adversarialBoundary.test.ts   # 17 attack attempts
+npx vitest run tests/crossUseCaseOperationId.test.ts  # cross-application op reuse
 npx vitest run                                  # full suite
 npm run build
 ```
@@ -109,6 +155,7 @@ effect ledger to interrogate, which is itself part of the finding.
 | Act with no observations | `invalid_precondition` | 0 |
 | Act with one of two observations | `invalid_precondition`, names the missing one | 0 |
 | Act with another use case's observations | `invalid_precondition` | 0 |
+| Act reusing another application's committed `operation_id` | `operation_id_scope_conflict`, no dispatch | unchanged |
 | Act with an unknown extra argument | `contract_violation` | 0 |
 | Act with `expected_revision: "1"` (string) | `contract_violation` | 0 |
 | Act with a non-string `operation_id` | `contract_violation` | 0 |

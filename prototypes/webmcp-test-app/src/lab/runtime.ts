@@ -185,6 +185,15 @@ export function createRecording(result: ComparisonResult, frameDurationMs = 900)
   };
 }
 
+/**
+ * An operation_id identifies one effect inside one application, so the effect
+ * table is keyed by both. A session-global key would let one application's
+ * committed record answer another application's duplicate check.
+ */
+function effectKey(useCaseId: string, operationId: string): string {
+  return `${useCaseId}\u0000${operationId}`;
+}
+
 export class SuiteToolRuntime {
   private revision = 1;
   private effects = new Map<string, EffectRecord>();
@@ -259,7 +268,7 @@ export class SuiteToolRuntime {
           structured_failure,
         };
       }
-      const effect = this.effects.get(operationId) ?? null;
+      const effect = this.effects.get(effectKey(useCase.id, operationId)) ?? null;
       return {
         ok: true,
         data: {
@@ -287,8 +296,9 @@ export class SuiteToolRuntime {
       };
     }
 
-    // D1: same operation_id reuses the committed record before any stale/missing checks.
-    const existing = this.effects.get(operationId);
+    // D1: the same operation_id in the same application reuses the committed
+    // record before any stale/missing checks.
+    const existing = this.effects.get(effectKey(useCase.id, operationId));
     if (existing) {
       return {
         ok: true,
@@ -351,7 +361,7 @@ export class SuiteToolRuntime {
       revision_at_commit: this.revision,
       record: { ...useCase.effectRecord, operation_id: operationId },
     };
-    this.effects.set(operationId, effect);
+    this.effects.set(effectKey(useCase.id, operationId), effect);
     this.revision += 1;
     return {
       ok: true,
