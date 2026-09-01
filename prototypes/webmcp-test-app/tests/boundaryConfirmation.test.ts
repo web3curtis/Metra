@@ -181,10 +181,13 @@ describe("boundary confirmation cannot be satisfied by a claim", () => {
     expect(registration.session.effectCount()).toBe(1);
     expect(runtime.effectCount()).toBe(1);
 
+    // The same reuse is refused through travel's reconcile tool too. An
+    // authoritative "absent" here would be a statement about travel's own
+    // records dressed as an answer about the commerce order.
     const reconciled = call("travel.get_reservation", { operation_id: "shared-id-001" });
-    // Travel's authority is clear that it holds no reservation under this id.
-    expect((reconciled.data as Record<string, unknown>).resolution).toBe("absent");
-    expect((reconciled.data as Record<string, unknown>).record).toBeNull();
+    expect(reconciled.ok).toBe(false);
+    expect(reconciled.error).toBe("operation_id_conflict");
+    expect(runtime.effectCount()).toBe(1);
   });
 
   it("G7 adopts a commit that only reconciliation reveals", () => {

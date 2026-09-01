@@ -943,9 +943,16 @@ export function createEnforcedHandler(input: {
         identity_conflict: ownership.ok ? null : ownership.reason,
       });
 
-      // An operation id that already means something else is refused outright.
-      // Inheriting another tool's record would let one commit certify a second.
-      if (!ownership.ok && contract.role === "act") {
+      // An operation id that already means something else is refused outright,
+      // whatever the role of the caller. Inheriting another tool's record would
+      // let one commit certify a second, and a reconcile that answers for an
+      // effect it does not own reports another application's absence as its own.
+      // The single legitimate reuse is a non-consequential follow-up inside the
+      // application that owns the id, which is how an act is verified by the
+      // reconcile tool that belongs to it.
+      const ownerUseCase = ownership.ok ? useCase.id : ownership.owner.tool_id.split(".")[0];
+      const ownAppFollowUp = contract.role !== "act" && ownerUseCase === useCase.id;
+      if (!ownership.ok && !ownAppFollowUp) {
         const structured_failure = buildStructuredFailure({
           category: "invalid_input_or_precondition",
           tool: toolId,
